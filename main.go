@@ -117,9 +117,10 @@ func main() {
 	
 	// Register the messageCreate func as a callback for MessageCreate events.
 	dg.AddHandler(messageCreate)
-	
-	// In this example, we only care about receiving message events.
-	dg.Identify.Intents = discordgo.IntentsGuildMessages
+	dg.AddHandler(messageReactionAdd)
+
+	// Message events for reposting, reaction events for 🧱 deletes.
+	dg.Identify.Intents = discordgo.IntentsGuildMessages | discordgo.IntentsGuildMessageReactions
 	
 	// Open a websocket connection to Discord and begin listening.
 	err = dg.Open()
@@ -360,6 +361,25 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		deleteOriginal(s, m)
 	}
 	
+}
+
+// messageReactionAdd deletes one of the bot's own messages when someone reacts to it with 🧱.
+func messageReactionAdd(s *discordgo.Session, r *discordgo.MessageReactionAdd) {
+	if r.Emoji.Name != "🧱" || r.UserID == s.State.User.ID {
+		return
+	}
+	message, err := s.ChannelMessage(r.ChannelID, r.MessageID)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	if message.Author == nil || message.Author.ID != s.State.User.ID {
+		return
+	}
+	err = s.ChannelMessageDelete(r.ChannelID, r.MessageID)
+	if err != nil {
+		log.Printf("Cannot delete message: %v", err)
+	}
 }
 
 // tweetEmbed builds an embed that mirrors the tweet: author, text, stats and date.
