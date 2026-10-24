@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"path"
 	"path/filepath"
@@ -90,6 +91,12 @@ var (
 // Group 1 is the user name, group 2 the tweet ID.
 var tweetLink = regexp.MustCompile(`https?://(?:www\.|mobile\.|d\.)?(?:x|twitter|cunnyx|fxtwitter|vxtwitter|fixupx|fixvx|twittpr|girlcockx|stupidpenisx|xcancel)\.com/(\w+)/status/(\d+)\S*`)
 
+// IDs of the bot's phixiv messages that were already rehosted.
+var rehostedPhixiv sync.Map
+
+// Matches a phixiv link that isn't wrapped in <>.
+var phixivLink = regexp.MustCompile(`(?:^|[^<])https?://(?:www\.)?phixiv\.net/`)
+
 // Matches a link, with or without <> around it. Group 1 is the link itself.
 var linkPattern = regexp.MustCompile(`<?(https?://[^\s<>]+)>?`)
 
@@ -120,6 +127,7 @@ func main() {
 	
 	// Register the messageCreate func as a callback for MessageCreate events.
 	dg.AddHandler(messageCreate)
+	dg.AddHandler(messageUpdate)
 	dg.AddHandler(messageReactionAdd)
 
 	// Message events for reposting, reaction events for 🧱 deletes.
@@ -150,6 +158,8 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	// Ignore all messages created by the bot itself
 	// This isn't required in this specific example but it's a good practice.
 	if m.Author.ID == s.State.User.ID {
+		// Except phixiv reposts that already come with their embed
+		rehostPhixiv(s, m.Message)
 		return
 	}
 
@@ -321,53 +331,14 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	// Forwarded embeds of any kind (bot embeds, link previews...) are reposted like tweets:
 	// the embed's text is copied and its images are downloaded and attached at full size
 	if len(forwardedEmbeds) > 0 {
-		var discordFiles []*discordgo.File
-		// Embed images that point at one of the message's own attachments are only downloaded once
-		downloaded := map[string]bool{}
-		for _, attachment := range m.Attachments {
-			file, err := downloadFile(attachment.URL, attachment.Filename)
-			if err != nil {
-				log.Println(err)
-				continue
-			}
-			discordFiles = append(discordFiles, file)
-			downloaded[stripQuery(attachment.URL)] = true
-		}
-		var embeds []*discordgo.MessageEmbed
-		for _, embed := range forwardedEmbeds {
-			for _, media := range embedMedia(embed) {
-				// Discord allows at most 10 files per message
-				if downloaded[stripQuery(media.url)] || len(discordFiles) >= 10 {
-					continue
-				}
-				downloaded[stripQuery(media.url)] = true
-				file, err := downloadFile(media.url, fileNameFromUrl(media.url))
-				if err != nil && media.proxyUrl != "" {
-					// Fall back to Discord's cached copy
-					file, err = downloadFile(media.proxyUrl, fileNameFromUrl(media.proxyUrl))
-				}
-				if err != nil {
-					log.Println(err)
-					continue
-				}
-				discordFiles = append(discordFiles, file)
-			}
-			if embedCopy := copyEmbed(embed); embedCopy != nil {
-				embeds = append(embeds, embedCopy)
-			}
-		}
-		if len(embeds) == 0 && len(discordFiles) == 0 {
-			return
-		}
-
-		// Links are wrapped in <> so Discord doesn't add its own preview next to the copied embed
-		content := linkPattern.ReplaceAllString(m.Content, "<$1>")
-		_, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{Content: content, Embeds: embeds, Files: discordFiles})
+		sent, err := repostEmbeds(s, m.ChannelID, m.Content, m.Attachments, forwardedEmbeds)
 		if err != nil {
 			log.Println(err)
 			return
 		}
-		deleteOriginal(s, m)
+		if sent {
+			deleteOriginal(s, m)
+		}
 		return
 	}
 
@@ -419,6 +390,105 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		deleteOriginal(s, m)
 	}
 	
+}
+
+// repostEmbeds sends a copy of embeds with their images, and the given attachments,
+// downloaded and attached at full size. It returns false if there was nothing to send.
+func repostEmbeds(s *discordgo.Session, channelID string, content string, attachments []*discordgo.MessageAttachment, sourceEmbeds []*discordgo.MessageEmbed) (bool, error) {
+	var discordFiles []*discordgo.File
+	// Embed images that point at one of the message's own attachments are only downloaded once
+	downloaded := map[string]bool{}
+	for _, attachment := range attachments {
+		file, err := downloadFile(attachment.URL, attachment.Filename)
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+		discordFiles = append(discordFiles, file)
+		downloaded[stripQuery(attachment.URL)] = true
+	}
+	var embeds []*discordgo.MessageEmbed
+	for _, embed := range sourceEmbeds {
+		for _, media := range embedMedia(embed) {
+			// Discord allows at most 10 files per message
+			if downloaded[stripQuery(media.url)] || len(discordFiles) >= 10 {
+				continue
+			}
+			downloaded[stripQuery(media.url)] = true
+			file, err := downloadFile(media.url, fileNameFromUrl(media.url))
+			if err != nil && media.proxyUrl != "" {
+				// Fall back to Discord's cached copy
+				file, err = downloadFile(media.proxyUrl, fileNameFromUrl(media.proxyUrl))
+			}
+			if err != nil {
+				log.Println(err)
+				continue
+			}
+			discordFiles = append(discordFiles, file)
+		}
+		if embedCopy := copyEmbed(embed); embedCopy != nil {
+			embeds = append(embeds, embedCopy)
+		}
+	}
+	if len(embeds) == 0 && len(discordFiles) == 0 {
+		return false, nil
+	}
+
+	// Links are wrapped in <> so Discord doesn't add its own preview next to the copied embed
+	content = linkPattern.ReplaceAllString(content, "<$1>")
+	_, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{Content: content, Embeds: embeds, Files: discordFiles})
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// messageUpdate catches the moment Discord adds a link's embed to one of the bot's messages.
+func messageUpdate(s *discordgo.Session, m *discordgo.MessageUpdate) {
+	if len(m.Embeds) == 0 {
+		return
+	}
+	message := m.Message
+	// Embed-only updates can leave out the author and text, so fetch the full message
+	if message.Author == nil {
+		var err error
+		message, err = s.ChannelMessage(m.ChannelID, m.ID)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+	}
+	rehostPhixiv(s, message)
+}
+
+// rehostPhixiv replaces one of the bot's own phixiv links, once Discord has added the link's
+// embed, with a copy of that embed and its images attached, like a tweet repost.
+func rehostPhixiv(s *discordgo.Session, message *discordgo.Message) {
+	// The rehosted copy wraps its link in <>, so only a plain phixiv link still needs rehosting
+	if message.Author == nil || message.Author.ID != s.State.User.ID || len(message.Embeds) == 0 || !phixivLink.MatchString(message.Content) {
+		return
+	}
+	for _, embed := range message.Embeds {
+		// Animations (ugoira) keep the phixiv link, since embeds can't play video
+		if embed.Video != nil && embed.Video.URL != "" {
+			return
+		}
+	}
+	// Discord can send the same embed more than once, so each message is only rehosted once
+	if _, done := rehostedPhixiv.LoadOrStore(message.ID, true); done {
+		return
+	}
+	sent, err := repostEmbeds(s, message.ChannelID, message.Content, message.Attachments, message.Embeds)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	if sent {
+		err := s.ChannelMessageDelete(message.ChannelID, message.ID)
+		if err != nil {
+			log.Printf("Cannot delete message: %v", err)
+		}
+	}
 }
 
 // messageReactionAdd deletes one of the bot's own messages when someone reacts to it with 🧱.
