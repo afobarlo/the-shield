@@ -278,12 +278,9 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		}
 		
 		embed := tweetEmbed(vx_data)
+		// Images are sent as normal attachments, not inside the embed, so Discord shows them at full size
 		var discordFiles []*discordgo.File
-		imageUrl := vx_data.CombinedMediaURL
-		if imageUrl == "" && len(vx_data.MediaURLs) > 0 {
-			imageUrl = vx_data.MediaURLs[0]
-		}
-		if imageUrl != "" {
+		for _, imageUrl := range vx_data.MediaURLs {
 			file, err := downloadFile(imageUrl, fileNameFromUrl(imageUrl))
 			if err != nil {
 				log.Println(err)
@@ -291,7 +288,6 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 				return
 			}
 			discordFiles = append(discordFiles, file)
-			embed.Image = &discordgo.MessageEmbedImage{URL: "attachment://" + file.Name}
 		}
 		
 		_, err = s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed}, Files: discordFiles})
@@ -325,32 +321,21 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			Author:      &discordgo.MessageEmbedAuthor{Name: m.Author.Username, IconURL: m.Author.AvatarURL("")},
 			Timestamp:   m.Timestamp.Format(time.RFC3339),
 		}
-		embeds := []*discordgo.MessageEmbed{embed}
+		// Files are sent as normal attachments, not inside the embed, so Discord shows them at full size
 		var discordFiles []*discordgo.File
-		for i, attachment := range m.Attachments {
-			file, err := downloadFile(attachment.URL, fmt.Sprintf("%d_%s", i, strings.ReplaceAll(attachment.Filename, " ", "_")))
+		for _, attachment := range m.Attachments {
+			file, err := downloadFile(attachment.URL, attachment.Filename)
 			if err != nil {
 				log.Println(err)
 				continue
 			}
 			discordFiles = append(discordFiles, file)
-			if !strings.HasPrefix(attachment.ContentType, "image/") {
-				continue
-			}
-			// Discord shows up to 4 embeds sharing the same URL as one image gallery
-			image := &discordgo.MessageEmbedImage{URL: "attachment://" + file.Name}
-			if embed.Image == nil {
-				embed.URL = attachment.URL
-				embed.Image = image
-			} else if len(embeds) < 4 {
-				embeds = append(embeds, &discordgo.MessageEmbed{URL: embed.URL, Image: image})
-			}
 		}
 		if len(discordFiles) == 0 {
 			return
 		}
-		
-		message := &discordgo.MessageSend{Embeds: embeds, Files: discordFiles}
+
+		message := &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed}, Files: discordFiles}
 		// Forwards only repost the files, with their text as a normal message
 		if isForward {
 			message = &discordgo.MessageSend{Content: m.Content, Files: discordFiles}
