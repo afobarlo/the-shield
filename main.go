@@ -152,11 +152,13 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 	// Forwarded messages carry their text and files in a snapshot, so treat them like a normal message
 	isForward := false
+	var forwardedEmbeds []*discordgo.MessageEmbed
 	if m.MessageReference != nil && m.MessageReference.Type == discordgo.MessageReferenceTypeForward && len(m.MessageSnapshots) > 0 {
 		if forwarded := m.MessageSnapshots[0].Message; forwarded != nil {
 			isForward = true
 			m.Content = forwarded.Content
 			m.Attachments = forwarded.Attachments
+			forwardedEmbeds = forwarded.Embeds
 		}
 	}
 	// If the message is "ping" reply with "Pong!"
@@ -312,7 +314,57 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		deleteOriginal(s, m)
 		return
 	}
-	
+
+	// Forwarded bot embeds (rich embeds, not link previews) are reposted like tweets:
+	// the embed is copied and its image is downloaded and attached at full size
+	var richEmbeds []*discordgo.MessageEmbed
+	for _, embed := range forwardedEmbeds {
+		if embed.Type == discordgo.EmbedTypeRich {
+			richEmbeds = append(richEmbeds, embed)
+		}
+	}
+	if len(richEmbeds) > 0 {
+		var discordFiles []*discordgo.File
+		// Embed images that point at one of the message's own attachments are only downloaded once
+		downloaded := map[string]bool{}
+		for _, attachment := range m.Attachments {
+			file, err := downloadFile(attachment.URL, attachment.Filename)
+			if err != nil {
+				log.Println(err)
+				continue
+			}
+			discordFiles = append(discordFiles, file)
+			downloaded[stripQuery(attachment.URL)] = true
+		}
+		var embeds []*discordgo.MessageEmbed
+		for _, embed := range richEmbeds {
+			// Discord allows at most 10 files per message
+			if embed.Image != nil && !downloaded[stripQuery(embed.Image.URL)] && len(discordFiles) < 10 {
+				downloaded[stripQuery(embed.Image.URL)] = true
+				file, err := downloadEmbedImage(embed.Image)
+				if err != nil {
+					log.Println(err)
+				} else {
+					discordFiles = append(discordFiles, file)
+				}
+			}
+			if embedCopy := copyEmbed(embed); embedCopy != nil {
+				embeds = append(embeds, embedCopy)
+			}
+		}
+		if len(embeds) == 0 && len(discordFiles) == 0 {
+			return
+		}
+
+		_, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{Content: m.Content, Embeds: embeds, Files: discordFiles})
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		deleteOriginal(s, m)
+		return
+	}
+
 	if strings.Contains(m.Content, "://") {
 		messageUrl := strings.Replace(m.Content, "/x.com", "/cunnyx.com", 1)
 		messageUrl = strings.Replace(messageUrl, "pixiv.net", "phixiv.net", 1)
@@ -471,7 +523,63 @@ func downloadFile(fileUrl string, name string) (*discordgo.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &discordgo.File{Name: name, ContentType: resp.Header.Get("Content-Type"), Reader: bytes.NewReader(data)}, nil
+	contentType := resp.Header.Get("Content-Type")
+	// Discord only previews files whose name has an extension
+	if path.Ext(name) == "" {
+		name += extensionFor(contentType)
+	}
+	return &discordgo.File{Name: name, ContentType: contentType, Reader: bytes.NewReader(data)}, nil
+}
+
+// downloadEmbedImage downloads an embed's image, using Discord's proxied copy if the original fails.
+func downloadEmbedImage(image *discordgo.MessageEmbedImage) (*discordgo.File, error) {
+	file, err := downloadFile(image.URL, fileNameFromUrl(image.URL))
+	if err != nil && image.ProxyURL != "" {
+		file, err = downloadFile(image.ProxyURL, fileNameFromUrl(image.ProxyURL))
+	}
+	return file, err
+}
+
+// copyEmbed copies the parts of a received embed that a bot can send, leaving out the image.
+// It returns nil if nothing is left, like the extra image-only embeds of a gallery.
+func copyEmbed(embed *discordgo.MessageEmbed) *discordgo.MessageEmbed {
+	embedCopy := &discordgo.MessageEmbed{
+		URL:         embed.URL,
+		Title:       embed.Title,
+		Description: embed.Description,
+		Timestamp:   embed.Timestamp,
+		Color:       embed.Color,
+		Fields:      embed.Fields,
+	}
+	if embed.Author != nil {
+		embedCopy.Author = &discordgo.MessageEmbedAuthor{Name: embed.Author.Name, URL: embed.Author.URL, IconURL: embed.Author.IconURL}
+	}
+	if embed.Footer != nil {
+		embedCopy.Footer = &discordgo.MessageEmbedFooter{Text: embed.Footer.Text, IconURL: embed.Footer.IconURL}
+	}
+	if embed.Thumbnail != nil {
+		embedCopy.Thumbnail = &discordgo.MessageEmbedThumbnail{URL: embed.Thumbnail.URL}
+	}
+	if embedCopy.Title == "" && embedCopy.Description == "" && embedCopy.Author == nil && embedCopy.Footer == nil && len(embedCopy.Fields) == 0 && embedCopy.Thumbnail == nil {
+		return nil
+	}
+	return embedCopy
+}
+
+func extensionFor(contentType string) string {
+	switch strings.TrimSpace(strings.Split(contentType, ";")[0]) {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	case "video/mp4":
+		return ".mp4"
+	}
+	return ""
 }
 
 func fileNameFromUrl(fileUrl string) string {
@@ -479,7 +587,15 @@ func fileNameFromUrl(fileUrl string) string {
 	if err != nil {
 		return "image.jpg"
 	}
-	return path.Base(u.Path)
+	name := path.Base(u.Path)
+	if name == "." || name == "/" {
+		return "image"
+	}
+	return name
+}
+
+func stripQuery(fileUrl string) string {
+	return strings.Split(fileUrl, "?")[0]
 }
 
 // repost sends content in place of the original message and deletes the original.
