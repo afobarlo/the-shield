@@ -2,6 +2,7 @@ package main
 
 import (
 	//"embed"
+	"bytes"
 	"flag"
 	"fmt"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"log"
 	"io"
 	"net/http"
+	"net/url"
+	"regexp"
 	"time"
 	"encoding/json"
 )
@@ -81,6 +84,10 @@ var (
 	Token string
 )
 
+// Matches tweet links on x.com, twitter.com and the embed fixer sites.
+// Group 1 is the user name, group 2 the tweet ID.
+var tweetLink = regexp.MustCompile(`https?://(?:www\.|mobile\.|d\.)?(?:x|twitter|cunnyx|fxtwitter|vxtwitter|fixupx|fixvx|twittpr|girlcockx|stupidpenisx|xcancel)\.com/(\w+)/status/(\d+)\S*`)
+
 func init() {
 	
 	flag.StringVar(&Token, "t", "", "Bot Token")
@@ -128,6 +135,14 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	// This isn't required in this specific example but it's a good practice.
 	if m.Author.ID == s.State.User.ID {
 		return
+	}
+
+	// Forwarded messages carry their text and files in a snapshot, so treat them like a normal message
+	if m.MessageReference != nil && m.MessageReference.Type == discordgo.MessageReferenceTypeForward && len(m.MessageSnapshots) > 0 {
+		if forwarded := m.MessageSnapshots[0].Message; forwarded != nil {
+			m.Content = forwarded.Content
+			m.Attachments = forwarded.Attachments
+		}
 	}
 	// If the message is "ping" reply with "Pong!"
 	if m.Content == "!ping" {
@@ -243,208 +258,48 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 		} 
 	*/
-	if strings.Contains(m.Content, "x.com") {
-		messageUrl := strings.Replace(m.Content, "/x.com", "/cunnyx.com", 1)
-		vx_url := strings.Replace(m.Content, "x.com", "api.vxtwitter.com", 1)
-		resp, err := http.Get(vx_url)
+	// x.com, twitter.com and fixer links (cunnyx, fxtwitter, vxtwitter...) all get the same embed
+	if match := tweetLink.FindStringSubmatch(m.Content); match != nil {
+		tweetPath := match[1] + "/status/" + match[2]
+		messageUrl := strings.Replace(m.Content, match[0], "https://cunnyx.com/"+tweetPath, 1)
+		vx_data, err := fetchTweet("https://api.vxtwitter.com/" + tweetPath)
 		if err != nil {
-			fmt.Println("Error get")
-			s.ChannelMessageSend(m.ChannelID, messageUrl)
-			err := s.ChannelMessageDelete(m.ChannelID, m.ID)
-			if err != nil {
-				log.Println("Cannot delete message: %v", err)
-			}
+			log.Println(err)
+			repost(s, m, messageUrl)
 			return
 		}
-		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			fmt.Println("Error readall")
-			s.ChannelMessageSend(m.ChannelID, messageUrl)
-			err := s.ChannelMessageDelete(m.ChannelID, m.ID)
-			if err != nil {
-				log.Println("Cannot delete message: %v", err)
-			}
-			return
-		}
-		var vx_data VXTwitter
-		err = json.Unmarshal(body, &vx_data)
-		if err != nil {
-			fmt.Println("Error lectura")
-			s.ChannelMessageSend(m.ChannelID, messageUrl)
-			err := s.ChannelMessageDelete(m.ChannelID, m.ID)
-			if err != nil {
-				log.Println("Cannot delete message: %v", err)
-			}
+
+		// Embeds can't play video, so videos keep using the cunnyx link
+		if hasVideo(vx_data) {
+			repost(s, m, messageUrl)
 			return
 		}
 		
-		if vx_data.CombinedMediaURL != "" {
-			
-			// 
-			var fileList []string
-			var fileName string
-			var filePath string
-			var discordFiles []*discordgo.File
-			fileName = path.Base(vx_data.CombinedMediaURL)
-			fileList = append(fileList, fileName)
-			filePath = "./" + fileName
-			resp, err := http.Get(vx_data.CombinedMediaURL)
+		embed := tweetEmbed(vx_data)
+		var discordFiles []*discordgo.File
+		imageUrl := vx_data.CombinedMediaURL
+		if imageUrl == "" && len(vx_data.MediaURLs) > 0 {
+			imageUrl = vx_data.MediaURLs[0]
+		}
+		if imageUrl != "" {
+			file, err := downloadFile(imageUrl, fileNameFromUrl(imageUrl))
 			if err != nil {
 				log.Println(err)
+				repost(s, m, messageUrl)
 				return
 			}
-			defer resp.Body.Close()
-			
-			imgData, err := io.ReadAll(resp.Body)
-			if err != nil {
-				log.Println(err)
-				return
-			}
-			
-			output, err := os.Create(filePath)
-			if err != nil {
-				log.Println(err)
-				s.ChannelMessageSend(m.ChannelID, messageUrl)
-				err := s.ChannelMessageDelete(m.ChannelID, m.ID)
-				if err != nil {
-					log.Println("Cannot delete message: %v", err)
-				}
-				return
-			}
-			defer output.Close()
-			
-			if _, err := output.Write(imgData); err != nil {
-				log.Println(err)
-				s.ChannelMessageSend(m.ChannelID, messageUrl)
-				err := s.ChannelMessageDelete(m.ChannelID, m.ID)
-				if err != nil {
-					log.Println("Cannot delete message: %v", err)
-				}
-				return
-			}
-			
-			file, err := os.Open(filePath)
-			if err != nil {
-				log.Println(err)
-				s.ChannelMessageSend(m.ChannelID, messageUrl)
-				err := s.ChannelMessageDelete(m.ChannelID, m.ID)
-				if err != nil {
-					log.Println("Cannot delete message: %v", err)
-				}
-				return
-			}
-			discordFiles = append(discordFiles, &discordgo.File{Name: fileName, Reader: file})
-			
-			s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{Content: "<" + m.Content + ">", Files: discordFiles})
-			
-			err = s.ChannelMessageDelete(m.ChannelID, m.ID)
-			if err != nil {
-				log.Println("Cannot delete message: %v", err)
-			}
-			
-			for _, fileName := range fileList {
-				err := os.Remove(fileName)
-				if err != nil {
-					log.Println(err)
-				}
-			}
-			//
-			
-			return
-			} else {
-			
-			if strings.HasSuffix(vx_data.MediaURLs[0], ".mp4") {
-				s.ChannelMessageSend(m.ChannelID, messageUrl)
-				err := s.ChannelMessageDelete(m.ChannelID, m.ID)
-				if err != nil {
-					log.Println("Cannot delete message: %v", err)
-				}
-				} else {
-				// 
-				var fileList []string
-				var fileName string
-				var filePath string
-				var discordFiles []*discordgo.File
-				fileName = path.Base(vx_data.MediaURLs[0])
-				fileList = append(fileList, fileName)
-				filePath = "./" + fileName
-				resp, err := http.Get(vx_data.MediaURLs[0])
-				if err != nil {
-					log.Println(err)
-					s.ChannelMessageSend(m.ChannelID, messageUrl)
-					err := s.ChannelMessageDelete(m.ChannelID, m.ID)
-					if err != nil {
-						log.Println("Cannot delete message: %v", err)
-					}
-					return
-				}
-				defer resp.Body.Close()
-				
-				imgData, err := io.ReadAll(resp.Body)
-				if err != nil {
-					log.Println(err)
-					s.ChannelMessageSend(m.ChannelID, messageUrl)
-					err := s.ChannelMessageDelete(m.ChannelID, m.ID)
-					if err != nil {
-						log.Println("Cannot delete message: %v", err)
-					}
-					return
-				}
-				
-				output, err := os.Create(filePath)
-				if err != nil {
-					log.Println(err)
-					s.ChannelMessageSend(m.ChannelID, messageUrl)
-					err := s.ChannelMessageDelete(m.ChannelID, m.ID)
-					if err != nil {
-						log.Println("Cannot delete message: %v", err)
-					}
-					return
-				}
-				defer output.Close()
-				
-				if _, err := output.Write(imgData); err != nil {
-					log.Println(err)
-					s.ChannelMessageSend(m.ChannelID, messageUrl)
-					err := s.ChannelMessageDelete(m.ChannelID, m.ID)
-					if err != nil {
-						log.Println("Cannot delete message: %v", err)
-					}
-					return
-				}
-				
-				file, err := os.Open(filePath)
-				if err != nil {
-					log.Println(err)
-					s.ChannelMessageSend(m.ChannelID, messageUrl)
-					err := s.ChannelMessageDelete(m.ChannelID, m.ID)
-					if err != nil {
-						log.Println("Cannot delete message: %v", err)
-					}
-					return
-				}
-				discordFiles = append(discordFiles, &discordgo.File{Name: fileName, Reader: file})
-				
-				s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{Content: "<" + m.Content + ">", Files: discordFiles})
-				
-				err = s.ChannelMessageDelete(m.ChannelID, m.ID)
-				if err != nil {
-					log.Println("Cannot delete message: %v", err)
-				}
-				
-				for _, fileName := range fileList {
-					err := os.Remove(fileName)
-					if err != nil {
-						log.Println(err)
-					}
-				}
-				//
-			}
-			
-			return
+			discordFiles = append(discordFiles, file)
+			embed.Image = &discordgo.MessageEmbedImage{URL: "attachment://" + file.Name}
 		}
 		
+		_, err = s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed}, Files: discordFiles})
+		if err != nil {
+			log.Println(err)
+			repost(s, m, messageUrl)
+			return
+		}
+		deleteOriginal(s, m)
+		return
 	}
 	
 	if strings.Contains(m.Content, "://") {
@@ -461,67 +316,145 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 	
-	if m.Attachments != nil {
-		if len(m.Attachments) == 0 {
+	if len(m.Attachments) > 0 {
+		embed := &discordgo.MessageEmbed{
+			Description: m.Content,
+			Color:       0x5865F2,
+			Author:      &discordgo.MessageEmbedAuthor{Name: m.Author.Username, IconURL: m.Author.AvatarURL("")},
+			Timestamp:   m.Timestamp.Format(time.RFC3339),
+		}
+		embeds := []*discordgo.MessageEmbed{embed}
+		var discordFiles []*discordgo.File
+		for i, attachment := range m.Attachments {
+			file, err := downloadFile(attachment.URL, fmt.Sprintf("%d_%s", i, strings.ReplaceAll(attachment.Filename, " ", "_")))
+			if err != nil {
+				log.Println(err)
+				continue
+			}
+			discordFiles = append(discordFiles, file)
+			if !strings.HasPrefix(attachment.ContentType, "image/") {
+				continue
+			}
+			// Discord shows up to 4 embeds sharing the same URL as one image gallery
+			image := &discordgo.MessageEmbedImage{URL: "attachment://" + file.Name}
+			if embed.Image == nil {
+				embed.URL = attachment.URL
+				embed.Image = image
+			} else if len(embeds) < 4 {
+				embeds = append(embeds, &discordgo.MessageEmbed{URL: embed.URL, Image: image})
+			}
+		}
+		if len(discordFiles) == 0 {
 			return
 		}
-		var fileList []string
-		var fileName string
-		var filePath string
-		var discordFiles []*discordgo.File
-		for i := range(len(m.Attachments)) {
-			fileName = strings.Split(path.Base(m.Attachments[i].URL), "?")[0]
-			fileList = append(fileList, fileName)
-			filePath = "./" + fileName
-			resp, err := http.Get(m.Attachments[i].URL)
-			if err != nil {
-				log.Println(err)
-				continue
-			}
-			defer resp.Body.Close()
-			
-			imgData, err := io.ReadAll(resp.Body)
-			if err != nil {
-				log.Println(err)
-				continue
-			}
-			
-			output, err := os.Create(filePath)
-			if err != nil {
-				log.Println(err)
-				continue
-			}
-			defer output.Close()
-			
-			if _, err := output.Write(imgData); err != nil {
-				log.Println(err)
-				continue
-			}
-			
-			file, err := os.Open(filePath)
-			if err != nil {
-				log.Println(err)
-				continue
-			}
-			
-			discordFiles = append(discordFiles, &discordgo.File{Name: fileName, Reader: file})
-			
-		}
-		s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{Content: m.Content, Files: discordFiles})
 		
-		err := s.ChannelMessageDelete(m.ChannelID, m.ID)
+		_, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{Embeds: embeds, Files: discordFiles})
 		if err != nil {
-			log.Println("Cannot delete message: %v", err)
+			log.Println(err)
+			return
 		}
-		
-		for _, fileName := range fileList {
-			err := os.Remove(fileName)
-			if err != nil {
-				log.Println(err)
-			}
-		}
-		
-		
+		deleteOriginal(s, m)
 	}
 	
+}
+
+// tweetEmbed builds an embed that mirrors the tweet: author, text, stats and date.
+func tweetEmbed(vx_data VXTwitter) *discordgo.MessageEmbed {
+	embed := &discordgo.MessageEmbed{
+		URL:         vx_data.TweetURL,
+		Description: truncate(vx_data.Text, 4096),
+		Color:       0x1DA1F2,
+		Author: &discordgo.MessageEmbedAuthor{
+			Name:    truncate(fmt.Sprintf("%s (@%s)", vx_data.UserName, vx_data.UserScreenName), 256),
+			URL:     "https://x.com/" + vx_data.UserScreenName,
+			IconURL: vx_data.UserProfileImageURL,
+		},
+		Fields: []*discordgo.MessageEmbedField{
+			{Name: "💬 Replies", Value: fmt.Sprint(vx_data.Replies), Inline: true},
+			{Name: "🔁 Retweets", Value: fmt.Sprint(vx_data.Retweets), Inline: true},
+			{Name: "❤️ Likes", Value: fmt.Sprint(vx_data.Likes), Inline: true},
+		},
+	}
+	if vx_data.DateEpoch != 0 {
+		embed.Timestamp = time.Unix(int64(vx_data.DateEpoch), 0).Format(time.RFC3339)
+	}
+	return embed
+}
+
+func hasVideo(vx_data VXTwitter) bool {
+	for _, media := range vx_data.MediaExtended {
+		if media.Type == "video" || media.Type == "gif" {
+			return true
+		}
+	}
+	for _, mediaUrl := range vx_data.MediaURLs {
+		if strings.Contains(mediaUrl, ".mp4") {
+			return true
+		}
+	}
+	return false
+}
+
+func fetchTweet(vx_url string) (VXTwitter, error) {
+	var vx_data VXTwitter
+	resp, err := http.Get(vx_url)
+	if err != nil {
+		return vx_data, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return vx_data, fmt.Errorf("vxtwitter %s: %s", vx_url, resp.Status)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return vx_data, err
+	}
+	err = json.Unmarshal(body, &vx_data)
+	return vx_data, err
+}
+
+// downloadFile fetches fileUrl into memory so it can be re-uploaded with the embed.
+func downloadFile(fileUrl string, name string) (*discordgo.File, error) {
+	resp, err := http.Get(fileUrl)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("download %s: %s", fileUrl, resp.Status)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	return &discordgo.File{Name: name, ContentType: resp.Header.Get("Content-Type"), Reader: bytes.NewReader(data)}, nil
+}
+
+func fileNameFromUrl(fileUrl string) string {
+	u, err := url.Parse(fileUrl)
+	if err != nil {
+		return "image.jpg"
+	}
+	return path.Base(u.Path)
+}
+
+// repost sends content in place of the original message and deletes the original.
+func repost(s *discordgo.Session, m *discordgo.MessageCreate, content string) {
+	s.ChannelMessageSend(m.ChannelID, content)
+	deleteOriginal(s, m)
+}
+
+func deleteOriginal(s *discordgo.Session, m *discordgo.MessageCreate) {
+	err := s.ChannelMessageDelete(m.ChannelID, m.ID)
+	if err != nil {
+		log.Printf("Cannot delete message: %v", err)
+	}
+}
+
+func truncate(text string, max int) string {
+	runes := []rune(text)
+	if len(runes) <= max {
+		return text
+	}
+	return string(runes[:max-1]) + "…"
 }
