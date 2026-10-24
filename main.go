@@ -90,6 +90,9 @@ var (
 // Group 1 is the user name, group 2 the tweet ID.
 var tweetLink = regexp.MustCompile(`https?://(?:www\.|mobile\.|d\.)?(?:x|twitter|cunnyx|fxtwitter|vxtwitter|fixupx|fixvx|twittpr|girlcockx|stupidpenisx|xcancel)\.com/(\w+)/status/(\d+)\S*`)
 
+// Matches a link, with or without <> around it. Group 1 is the link itself.
+var linkPattern = regexp.MustCompile(`<?(https?://[^\s<>]+)>?`)
+
 func init() {
 	
 	flag.StringVar(&Token, "t", "", "Bot Token (overrides the token file)")
@@ -315,15 +318,9 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	// Forwarded bot embeds (rich embeds, not link previews) are reposted like tweets:
-	// the embed is copied and its image is downloaded and attached at full size
-	var richEmbeds []*discordgo.MessageEmbed
-	for _, embed := range forwardedEmbeds {
-		if embed.Type == discordgo.EmbedTypeRich {
-			richEmbeds = append(richEmbeds, embed)
-		}
-	}
-	if len(richEmbeds) > 0 {
+	// Forwarded embeds of any kind (bot embeds, link previews...) are reposted like tweets:
+	// the embed's text is copied and its images are downloaded and attached at full size
+	if len(forwardedEmbeds) > 0 {
 		var discordFiles []*discordgo.File
 		// Embed images that point at one of the message's own attachments are only downloaded once
 		downloaded := map[string]bool{}
@@ -337,16 +334,23 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			downloaded[stripQuery(attachment.URL)] = true
 		}
 		var embeds []*discordgo.MessageEmbed
-		for _, embed := range richEmbeds {
-			// Discord allows at most 10 files per message
-			if embed.Image != nil && !downloaded[stripQuery(embed.Image.URL)] && len(discordFiles) < 10 {
-				downloaded[stripQuery(embed.Image.URL)] = true
-				file, err := downloadEmbedImage(embed.Image)
+		for _, embed := range forwardedEmbeds {
+			for _, media := range embedMedia(embed) {
+				// Discord allows at most 10 files per message
+				if downloaded[stripQuery(media.url)] || len(discordFiles) >= 10 {
+					continue
+				}
+				downloaded[stripQuery(media.url)] = true
+				file, err := downloadFile(media.url, fileNameFromUrl(media.url))
+				if err != nil && media.proxyUrl != "" {
+					// Fall back to Discord's cached copy
+					file, err = downloadFile(media.proxyUrl, fileNameFromUrl(media.proxyUrl))
+				}
 				if err != nil {
 					log.Println(err)
-				} else {
-					discordFiles = append(discordFiles, file)
+					continue
 				}
+				discordFiles = append(discordFiles, file)
 			}
 			if embedCopy := copyEmbed(embed); embedCopy != nil {
 				embeds = append(embeds, embedCopy)
@@ -356,7 +360,9 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			return
 		}
 
-		_, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{Content: m.Content, Embeds: embeds, Files: discordFiles})
+		// Links are wrapped in <> so Discord doesn't add its own preview next to the copied embed
+		content := linkPattern.ReplaceAllString(m.Content, "<$1>")
+		_, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{Content: content, Embeds: embeds, Files: discordFiles})
 		if err != nil {
 			log.Println(err)
 			return
@@ -531,17 +537,29 @@ func downloadFile(fileUrl string, name string) (*discordgo.File, error) {
 	return &discordgo.File{Name: name, ContentType: contentType, Reader: bytes.NewReader(data)}, nil
 }
 
-// downloadEmbedImage downloads an embed's image, using Discord's proxied copy if the original fails.
-func downloadEmbedImage(image *discordgo.MessageEmbedImage) (*discordgo.File, error) {
-	file, err := downloadFile(image.URL, fileNameFromUrl(image.URL))
-	if err != nil && image.ProxyURL != "" {
-		file, err = downloadFile(image.ProxyURL, fileNameFromUrl(image.ProxyURL))
-	}
-	return file, err
+type embedMediaUrl struct {
+	url      string
+	proxyUrl string
 }
 
-// copyEmbed copies the parts of a received embed that a bot can send, leaving out the image.
-// It returns nil if nothing is left, like the extra image-only embeds of a gallery.
+// embedMedia lists the images of an embed to download and attach. Link previews keep
+// their picture in the thumbnail, and GIF previews (Tenor, Giphy) in the video.
+func embedMedia(embed *discordgo.MessageEmbed) []embedMediaUrl {
+	var media []embedMediaUrl
+	if embed.Image != nil && embed.Image.URL != "" {
+		media = append(media, embedMediaUrl{embed.Image.URL, embed.Image.ProxyURL})
+	}
+	if embed.Type == discordgo.EmbedTypeGifv && embed.Video != nil && embed.Video.URL != "" {
+		media = append(media, embedMediaUrl{embed.Video.URL, ""})
+	} else if embed.Type != discordgo.EmbedTypeRich && embed.Thumbnail != nil && embed.Thumbnail.URL != "" {
+		media = append(media, embedMediaUrl{embed.Thumbnail.URL, embed.Thumbnail.ProxyURL})
+	}
+	return media
+}
+
+// copyEmbed copies the parts of a received embed that a bot can send, leaving out the
+// images, which are attached as files. It returns nil if nothing is left, like the extra
+// image-only embeds of a gallery or a preview of a plain image link.
 func copyEmbed(embed *discordgo.MessageEmbed) *discordgo.MessageEmbed {
 	embedCopy := &discordgo.MessageEmbed{
 		URL:         embed.URL,
@@ -557,7 +575,12 @@ func copyEmbed(embed *discordgo.MessageEmbed) *discordgo.MessageEmbed {
 	if embed.Footer != nil {
 		embedCopy.Footer = &discordgo.MessageEmbedFooter{Text: embed.Footer.Text, IconURL: embed.Footer.IconURL}
 	}
-	if embed.Thumbnail != nil {
+	// Bots can't send the site name of a link preview, so show it in the footer instead
+	if embed.Provider != nil && embed.Provider.Name != "" && embedCopy.Footer == nil {
+		embedCopy.Footer = &discordgo.MessageEmbedFooter{Text: embed.Provider.Name}
+	}
+	// Small thumbnails (logos, avatars) stay on bot embeds; on link previews the thumbnail is the attached picture
+	if embed.Type == discordgo.EmbedTypeRich && embed.Thumbnail != nil {
 		embedCopy.Thumbnail = &discordgo.MessageEmbedThumbnail{URL: embed.Thumbnail.URL}
 	}
 	if embedCopy.Title == "" && embedCopy.Description == "" && embedCopy.Author == nil && embedCopy.Footer == nil && len(embedCopy.Fields) == 0 && embedCopy.Thumbnail == nil {
