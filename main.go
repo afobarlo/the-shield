@@ -138,8 +138,10 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 
 	// Forwarded messages carry their text and files in a snapshot, so treat them like a normal message
+	isForward := false
 	if m.MessageReference != nil && m.MessageReference.Type == discordgo.MessageReferenceTypeForward && len(m.MessageSnapshots) > 0 {
 		if forwarded := m.MessageSnapshots[0].Message; forwarded != nil {
+			isForward = true
 			m.Content = forwarded.Content
 			m.Attachments = forwarded.Attachments
 		}
@@ -348,7 +350,12 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			return
 		}
 		
-		_, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{Embeds: embeds, Files: discordFiles})
+		message := &discordgo.MessageSend{Embeds: embeds, Files: discordFiles}
+		// Forwards only repost the files, with their text as a normal message
+		if isForward {
+			message = &discordgo.MessageSend{Content: m.Content, Files: discordFiles}
+		}
+		_, err := s.ChannelMessageSendComplex(m.ChannelID, message)
 		if err != nil {
 			log.Println(err)
 			return
