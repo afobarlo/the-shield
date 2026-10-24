@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"path"
+	"path/filepath"
 	"github.com/bwmarrin/discordgo"
 	"log"
 	"io"
@@ -81,7 +82,8 @@ type Phixiv struct {
 // 
 // Variables used for command line parameters
 var (
-	Token string
+	Token     string
+	TokenFile string
 )
 
 // Matches tweet links on x.com, twitter.com and the embed fixer sites.
@@ -90,14 +92,24 @@ var tweetLink = regexp.MustCompile(`https?://(?:www\.|mobile\.|d\.)?(?:x|twitter
 
 func init() {
 	
-	flag.StringVar(&Token, "t", "", "Bot Token")
+	flag.StringVar(&Token, "t", "", "Bot Token (overrides the token file)")
+	flag.StringVar(&TokenFile, "token-file", "token.txt", "File containing the bot token")
 	flag.Parse()
 }
 
 func main() {
-	
+
+	if Token == "" {
+		token, err := readToken(TokenFile)
+		if err != nil {
+			fmt.Println("error reading bot token,", err)
+			return
+		}
+		Token = token
+	}
+
 	// Create a new Discord session using the provided bot token.
-	dg, err := discordgo.New("Bot " + "")
+	dg, err := discordgo.New("Bot " + Token)
 	if err != nil {
 		fmt.Println("error creating Discord session,", err)
 		return
@@ -371,6 +383,26 @@ func tweetEmbed(vx_data VXTwitter) *discordgo.MessageEmbed {
 		embed.Timestamp = time.Unix(int64(vx_data.DateEpoch), 0).Format(time.RFC3339)
 	}
 	return embed
+}
+
+// readToken reads the bot token from tokenFile, looking in the current
+// directory first and then next to the executable.
+func readToken(tokenFile string) (string, error) {
+	data, err := os.ReadFile(tokenFile)
+	if err != nil && !filepath.IsAbs(tokenFile) {
+		if exe, exeErr := os.Executable(); exeErr == nil {
+			data, err = os.ReadFile(filepath.Join(filepath.Dir(exe), tokenFile))
+		}
+	}
+	if err != nil {
+		return "", err
+	}
+	token := strings.TrimSpace(string(data))
+	token = strings.TrimPrefix(token, "Bot ")
+	if token == "" {
+		return "", fmt.Errorf("%s is empty", tokenFile)
+	}
+	return token, nil
 }
 
 func hasVideo(vx_data VXTwitter) bool {
