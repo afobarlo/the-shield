@@ -521,11 +521,11 @@ func tweetEmbed(vx_data VXTwitter) *discordgo.MessageEmbed {
 			URL:     "https://x.com/" + vx_data.UserScreenName,
 			IconURL: vx_data.UserProfileImageURL,
 		},
-		Fields: []*discordgo.MessageEmbedField{
+		/* Fields: []*discordgo.MessageEmbedField{
 			{Name: "💬 Replies", Value: fmt.Sprint(vx_data.Replies), Inline: true},
 			{Name: "🔁 Retweets", Value: fmt.Sprint(vx_data.Retweets), Inline: true},
 			{Name: "❤️ Likes", Value: fmt.Sprint(vx_data.Likes), Inline: true},
-		},
+		}, */
 	}
 	if vx_data.DateEpoch != 0 {
 		embed.Timestamp = time.Unix(int64(vx_data.DateEpoch), 0).Format(time.RFC3339)
