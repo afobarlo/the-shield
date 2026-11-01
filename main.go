@@ -380,16 +380,21 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			return
 		}
 
-		// Embeds can't play video, so videos keep using the cunnyx link
+		// Videos and GIFs are uploaded like images, unless they're over Discord's limit
+		mediaUrls := vx_data.MediaURLs
 		if hasVideo(vx_data) {
-			repost(s, m, messageUrl)
-			return
+			var fits bool
+			mediaUrls, fits = uploadableMedia(s, m.GuildID, vx_data.MediaURLs)
+			if !fits {
+				repost(s, m, messageUrl)
+				return
+			}
 		}
-		
+
 		embed := tweetEmbed(vx_data)
 		// Images are sent as normal attachments, not inside the embed, so Discord shows them at full size
 		var downloads []fileDownload
-		for _, imageUrl := range vx_data.MediaURLs {
+		for _, imageUrl := range mediaUrls {
 			downloads = append(downloads, fileDownload{url: imageUrl, name: fileNameFromUrl(imageUrl)})
 		}
 		discordFiles, failed := downloadAll(downloads)
@@ -874,6 +879,59 @@ func hasVideo(vx_data VXTwitter) bool {
 		}
 	}
 	return false
+}
+
+// uploadLimit returns the largest file a bot can upload to a server with this boost level, in bytes.
+func uploadLimit(tier discordgo.PremiumTier) int64 {
+	switch tier {
+	case discordgo.PremiumTier3:
+		return 100 * 1024 * 1024
+	case discordgo.PremiumTier2:
+		return 50 * 1024 * 1024
+	}
+	return 10 * 1024 * 1024
+}
+
+// uploadableMedia returns the links to upload for a post with videos, checking their sizes
+// without downloading them. X stores GIFs as mp4 files, so those become real GIFs from
+// FxTwitter, or stay as mp4 files if that doesn't fit. It returns false if a video can't be uploaded.
+func uploadableMedia(s *discordgo.Session, guildID string, mediaUrls []string) ([]string, bool) {
+	guild, err := s.Guild(guildID)
+	if err != nil {
+		log.Println(err)
+		return nil, false
+	}
+	limit := uploadLimit(guild.PremiumTier)
+	var uploadUrls []string
+	for _, mediaUrl := range mediaUrls {
+		if !strings.Contains(mediaUrl, ".mp4") {
+			uploadUrls = append(uploadUrls, mediaUrl)
+			continue
+		}
+		if strings.Contains(mediaUrl, "/tweet_video/") {
+			gifUrl := "https://gif.fxtwitter.com/tweet_video/" + strings.TrimSuffix(fileNameFromUrl(mediaUrl), ".mp4") + ".gif"
+			if fileFits(gifUrl, limit) {
+				uploadUrls = append(uploadUrls, gifUrl)
+				continue
+			}
+		}
+		if !fileFits(mediaUrl, limit) {
+			return nil, false
+		}
+		uploadUrls = append(uploadUrls, mediaUrl)
+	}
+	return uploadUrls, true
+}
+
+// fileFits tells whether a file is within limit. It's false if its size can't be found out.
+func fileFits(fileUrl string, limit int64) bool {
+	resp, err := http.Head(fileUrl)
+	if err != nil {
+		log.Println(err)
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK && resp.ContentLength >= 0 && resp.ContentLength <= limit
 }
 
 func fetchTweet(vx_url string) (VXTwitter, error) {

@@ -19,16 +19,16 @@ The repost goes through a webhook, so it shows the sender's server nickname and 
 
 | Message | What the bot does |
 | --- | --- |
-| X post link, without video | Sends an embed with the post's author, text and date and a clean link to the post, plus its images as attachments and any text sent with the link. Posts in other languages show an English translation when one is available |
-| X post link, with video | Reposts the message with the link changed to `cunnyx.com` |
+| X post link | Sends an embed with the post's author, text and date and a clean link to the post, plus its images, videos and GIFs as attachments and any text sent with the link. Posts in other languages show an English translation when one is available |
+| X post link, with a video over the server's upload limit | Reposts the message with the link changed to `cunnyx.com` |
 | X post link in a spoiler or `<>` | Reposts the message with the link changed to `cunnyx.com`, keeping the spoiler or `<>` |
 | Forward with embeds | Copies the embeds and attaches their images |
 | Contains a `tenor.com` link | Leaves it alone |
-| Contains any other link (`://`) | Reposts the message, changing `pixiv.net` to `phixiv.net` if present. Artwork links get `/1-9` added to show up to nine images, unless they already pick an image or range |
+| Contains any other link (`://`) | Reposts the message, changing `pixiv.net` to `phixiv.net` if present. Artwork links get `/1-9` added to show more images, unless they already pick an image or range. Phixiv currently seems to show at most five |
 | Has attachments | Re-uploads the files, with any text as a normal message |
 | Anything else | Leaves it alone |
 
-X post links also include `twitter.com` and fixer sites such as `fxtwitter.com` and `vxtwitter.com`. If the bot can't build the embed for a post, it falls back to the `cunnyx.com` repost. Reposted X links also lose anything after the post ID.
+X post links also include `twitter.com` and fixer sites such as `fxtwitter.com` and `vxtwitter.com`. If the bot can't build the embed for a post, it falls back to the `cunnyx.com` repost. GIFs are uploaded as `.gif` files converted by `gif.fxtwitter.com`, or as `.mp4` files if that fails or the GIF is too big. Reposted X links also lose anything after the post ID.
 
 Forwarded messages are handled using the forwarded text and files.
 
