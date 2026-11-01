@@ -68,7 +68,7 @@ Or build a binary and run that instead:
 go build -o the-shield
 ```
 
-The bot runs until you press Ctrl+C. Start it from the same folder each time, because it keeps its files in the current directory (see [Files and flags](#files-and-flags)).
+The bot runs until you press Ctrl+C. Start it from the same folder each time, because it keeps its files in the current directory (see [Files and flags](#files-and-flags)). To keep it running in the background, see [Running with systemd](#running-with-systemd).
 
 ### Choosing channels
 
@@ -99,6 +99,84 @@ Each ID goes on its own line. To turn a channel off, delete its line while the b
 | `repost_senders.txt` | Who each repost belongs to, so 🧱 deletes keep working after a restart. It grows by one short line per repost. | `-senders-file` |
 
 All three are listed in `.gitignore`. You can also pass the token directly with `-t`, which is used instead of the file.
+
+### Running with systemd
+
+On Linux, systemd can start the bot at boot and restart it if it crashes.
+
+1. Stop any copy of the bot that's already running. Two copies would both repost the same messages.
+2. In the repository folder, build the bot and print the folder's full path:
+
+   ```bash
+   go build -o the-shield
+   ```
+
+   ```bash
+   pwd
+   ```
+
+3. Create the service file:
+
+   ```bash
+   sudo nano /etc/systemd/system/the-shield.service
+   ```
+
+4. Paste this in, replacing `YOUR_USER` with the user that owns the folder (`whoami` prints it) and `/path/to/the-shield` with the path from `pwd`:
+
+   ```ini
+   [Unit]
+   Description=the-shield Discord bot
+   After=network-online.target
+   Wants=network-online.target
+
+   [Service]
+   User=YOUR_USER
+   WorkingDirectory=/path/to/the-shield
+   ExecStart=/path/to/the-shield/the-shield
+   Restart=always
+   RestartSec=5
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+
+   `WorkingDirectory` is the folder where the bot looks for its [files](#files-and-flags), so `token.txt` and any existing `secret_channels.txt` and `repost_senders.txt` need to be there.
+
+5. Load the file, then start the bot now and at every boot:
+
+   ```bash
+   sudo systemctl daemon-reload
+   ```
+
+   ```bash
+   sudo systemctl enable --now the-shield
+   ```
+
+6. Check that it's running:
+
+   ```bash
+   systemctl status the-shield
+   ```
+
+To follow the bot's logs:
+
+```bash
+journalctl -u the-shield -f
+```
+
+To update the bot, run these in the repository folder:
+
+```bash
+git pull
+```
+
+```bash
+go build -o the-shield
+```
+
+```bash
+sudo systemctl restart the-shield
+```
 
 ## Known limitations
 
