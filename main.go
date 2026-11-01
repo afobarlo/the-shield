@@ -958,14 +958,14 @@ func stripQuery(fileUrl string) string {
 	return strings.Split(fileUrl, "?")[0]
 }
 
-// repost sends content in place of the original message and deletes the original.
+// repost sends content in place of the original message and deletes the original if that worked.
 func repost(s *discordgo.Session, m *discordgo.MessageCreate, content string) {
 	sent, err := s.ChannelMessageSend(m.ChannelID, content)
 	if err != nil {
 		log.Println(err)
-	} else {
-		recordSender(sent.ID, m.Author.ID)
+		return
 	}
+	recordSender(sent.ID, m.Author.ID)
 	deleteOriginal(s, m)
 }
 

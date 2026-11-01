@@ -1,19 +1,19 @@
 # the-shield
 
-A Discord bot written in Go that reposts messages with cleaner links and previews, then deletes the originals. By default it changes X post links to translated `fixupx.com` links. In channels you choose, it also turns X posts into embeds with full-size images, sends Pixiv links through phixiv, and reposts other links and attachments.
+A Discord bot written in Go that reposts messages with cleaner links and previews, then deletes the originals. By default it changes X post links to translated `fixupx.com` links. In channels you choose, it also turns X posts into embeds with full-size images, sends Pixiv links through phixiv, and reposts other links and attachments. Whoever's message was reposted can delete the repost by reacting with 🧱.
 
 ## What it does
 
 What the bot does depends on whether a channel is turned on with [`/secret`](#choosing-channels). In every channel, it replies `Pong!` to `!ping` and `Ping!` to `!pong`.
 
-**In other channels,** the bot only replaces X post links, including `twitter.com` and fixer sites such as `fxtwitter.com`, `vxtwitter.com` and `fixupx.com`. It reposts the message with each link changed to `fixupx.com`, with `/en` added so the post is translated to English, then deletes the original. Anything after the post ID, such as `?s=20`, is removed.
-
-The repost goes through a webhook, so it shows the sender's server nickname and profile picture. Webhooks can't send replies, so a reply is posted by the bot with `**name:**` in front of the text. The bot does the same if the webhook fails, for example without the **Manage Webhooks** permission. It leaves these alone:
+**In other channels,** the bot only replaces X post links, including `twitter.com` and fixer sites such as `fxtwitter.com`, `vxtwitter.com` and `fixupx.com`. It reposts the message with each link changed to `fixupx.com`, with `/en` added so the post is translated to English, then deletes the original. Anything after the post ID, such as `?s=20`, is removed. It leaves these alone:
 
 - Links wrapped in `<>`
 - Messages with attachments
 - Forwarded messages
 - Messages from bots
+
+The repost goes through a webhook, so it shows the sender's server nickname and profile picture. Webhooks can't send replies, so a reply is posted by the bot with `**name:**` in front of the text. The bot does the same if the webhook fails, for example without the **Manage Webhooks** permission.
 
 **In channels turned on with `/secret`,** the bot checks each new message in this order and acts on the first match. It ignores its own messages, but not those from other bots.
 
@@ -34,7 +34,7 @@ Forwarded messages are handled using the forwarded text and files. Forwarded att
 
 Other behavior:
 
-- **Originals:** the original message is deleted after a successful repost.
+- **Originals:** the original message is deleted after a successful repost. If the repost fails, the original stays.
 - **Phixiv:** once Discord adds a preview to one of the bot's phixiv links, the bot replaces that message with a copy of the preview and its images attached. Animations keep the phixiv link.
 - **Deleting reposts:** the person whose message was reposted can delete the repost by reacting to it with 🧱. Nobody else's 🧱 does anything, but members with **Manage Messages** can still delete it the usual way.
 
@@ -68,15 +68,13 @@ Or build a binary and run that instead:
 go build -o the-shield
 ```
 
-The bot runs until you press Ctrl+C.
-
-The bot records who each repost belongs to in `repost_senders.txt`, in the current directory, so 🧱 deletes keep working after a restart. The file grows by one short line per repost. Use `-senders-file` to choose a different path.
+The bot runs until you press Ctrl+C. Start it from the same folder each time, because it keeps its files in the current directory (see [Files and flags](#files-and-flags)).
 
 ### Choosing channels
 
 Run `/secret` in a channel to turn full message replacing on there, and run it again to go back to replacing only X post links. The reply is only visible to you, and by default only members with the **Manage Channels** permission can use the command.
 
-The list is saved to `secret_channels.txt` in the current directory, so start the bot from the same folder each time. Use `-channels-file` to choose a different path.
+The list is saved to `secret_channels.txt`.
 
 To add a channel without the command:
 
@@ -92,14 +90,15 @@ To add a channel without the command:
 
 Each ID goes on its own line. To turn a channel off, delete its line while the bot is stopped.
 
-### Token options
+### Files and flags
 
-The bot looks for `token.txt` in the current directory, then next to the executable. Two flags change that:
-
-| Flag | Default | Description |
+| File | What it holds | Flag to change the path |
 | --- | --- | --- |
-| `-t` | none | The token itself, used instead of the file |
-| `-token-file` | `token.txt` | Path to the file containing the token |
+| `token.txt` | The bot token. The bot looks in the current directory, then next to the executable. | `-token-file` |
+| `secret_channels.txt` | Channels turned on with `/secret` | `-channels-file` |
+| `repost_senders.txt` | Who each repost belongs to, so 🧱 deletes keep working after a restart. It grows by one short line per repost. | `-senders-file` |
+
+All three are listed in `.gitignore`. You can also pass the token directly with `-t`, which is used instead of the file.
 
 ## Known limitations
 
@@ -107,6 +106,7 @@ The bot looks for `token.txt` in the current directory, then next to the executa
 - **Only the first X link gets an embed.** In `/secret` channels, any other links stay in the message text as they were sent.
 - **`/secret` channels don't credit the sender on X reposts.** The embed shows the post's author, not who shared it. Reposted links don't show the sender either.
 - **Replaced phixiv messages aren't remembered across restarts.** The list of handled messages is kept in memory.
+- **🧱 only works on recorded reposts.** Reposts made before the bot started recording senders can't be deleted this way, and neither can its other messages, such as `Pong!`.
 
 ## License
 
