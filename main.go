@@ -550,7 +550,9 @@ func messageReactionAdd(s *discordgo.Session, r *discordgo.MessageReactionAdd) {
 // tweetEmbed builds an embed that mirrors the tweet: author, text, stats and date.
 func tweetEmbed(vx_data VXTwitter) *discordgo.MessageEmbed {
 	embed := &discordgo.MessageEmbed{
-		URL:         vx_data.TweetURL,
+		// The URL only shows up as a link on the title. It's built here so it has no tracking
+		Title:       "View post on X",
+		URL:         "https://x.com/" + vx_data.UserScreenName + "/status/" + vx_data.TweetID,
 		Description: truncate(vx_data.Text, 4096),
 		Color:       0x1DA1F2,
 		Author: &discordgo.MessageEmbedAuthor{
