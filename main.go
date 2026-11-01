@@ -120,6 +120,9 @@ var rehostedPhixiv sync.Map
 // Matches a phixiv link that isn't wrapped in <>.
 var phixivLink = regexp.MustCompile(`(?:^|[^<])https?://(?:www\.)?phixiv\.net/`)
 
+// Matches a phixiv artwork link. Group 1 is the image number or range, if it has one.
+var phixivArtwork = regexp.MustCompile(`phixiv\.net/(?:[\w-]+/)?artworks/\d+(/[\d-]+)?/?`)
+
 // Matches a link, with or without <> around it. Group 1 is the link itself.
 var linkPattern = regexp.MustCompile(`<?(https?://[^\s<>]+)>?`)
 
@@ -416,6 +419,13 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		if strings.Contains(m.Content, "tenor.com") {
 			return
 		}
+		// Ask for the first nine images, unless the link already picks some
+		messageUrl = phixivArtwork.ReplaceAllStringFunc(messageUrl, func(link string) string {
+			if phixivArtwork.FindStringSubmatch(link)[1] != "" {
+				return link
+			}
+			return strings.TrimSuffix(link, "/") + "/1-9"
+		})
 		repost(s, m, messageUrl)
 		return
 	}
