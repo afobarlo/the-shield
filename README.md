@@ -4,7 +4,9 @@ A Discord bot written in Go that reposts messages containing links or attachment
 
 ## What it does
 
-The bot checks each new server message in this order and acts on the first match. It ignores its own messages, but not those from other bots.
+The bot only replaces messages in channels turned on with [`/secret`](#choosing-channels), so it does nothing but answer `!ping` and `!pong` until you turn one on.
+
+In those channels, it checks each new message in this order and acts on the first match. It ignores its own messages, but not those from other bots.
 
 | Message | What the bot does |
 | --- | --- |
@@ -36,7 +38,7 @@ Other behavior:
 
 1. In the Developer Portal, create a bot and copy its token.
 2. Under the bot's **Privileged Gateway Intents**, turn on **Message Content Intent**.
-3. Invite the bot to your server with these permissions: **View Channels**, **Send Messages**, **Embed Links**, **Attach Files**, **Read Message History** and **Manage Messages**.
+3. Invite the bot to your server with the `bot` and `applications.commands` scopes and these permissions: **View Channels**, **Send Messages**, **Embed Links**, **Attach Files**, **Read Message History** and **Manage Messages**.
 4. Create a file named `token.txt` containing only the token:
 
    ```
@@ -59,6 +61,12 @@ go build -o the-shield
 
 The bot runs until you press Ctrl+C.
 
+### Choosing channels
+
+Run `/secret` in a channel to turn message replacing on there, and run it again to turn it off. The reply is only visible to you, and by default only members with the **Manage Channels** permission can use the command.
+
+The list is saved to `secret_channels.txt` in the current directory, so start the bot from the same folder each time. Use `-channels-file` to choose a different path.
+
 ### Token options
 
 The bot looks for `token.txt` in the current directory, then next to the executable. Two flags change that:
@@ -70,6 +78,7 @@ The bot looks for `token.txt` in the current directory, then next to the executa
 
 ## Known limitations
 
+- **Threads are separate channels.** Turning on a channel doesn't include its threads, so run `/secret` inside a thread to turn it on.
 - **Only the first X link gets an embed.** Any other links stay in the message text as they were sent.
 - **X reposts don't credit the sender.** The embed shows the post's author, not who shared it. Reposted links don't show the sender either.
 - **Replaced phixiv messages aren't remembered across restarts.** The list of handled messages is kept in memory.

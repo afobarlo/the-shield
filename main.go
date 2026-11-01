@@ -85,6 +85,13 @@ type Phixiv struct {
 var (
 	Token     string
 	TokenFile string
+	ChannelsFile string
+)
+
+// Channels where the bot replaces messages, turned on and off with /secret.
+var (
+	secretChannels     = map[string]bool{}
+	secretChannelsLock sync.RWMutex
 )
 
 // Matches tweet links on x.com, twitter.com and the embed fixer sites.
@@ -104,6 +111,7 @@ func init() {
 	
 	flag.StringVar(&Token, "t", "", "Bot Token (overrides the token file)")
 	flag.StringVar(&TokenFile, "token-file", "token.txt", "File containing the bot token")
+	flag.StringVar(&ChannelsFile, "channels-file", "secret_channels.txt", "File where the channels turned on with /secret are saved")
 	flag.Parse()
 }
 
@@ -118,6 +126,12 @@ func main() {
 		Token = token
 	}
 
+	err := loadSecretChannels(ChannelsFile)
+	if err != nil {
+		fmt.Println("error reading secret channels,", err)
+		return
+	}
+
 	// Create a new Discord session using the provided bot token.
 	dg, err := discordgo.New("Bot " + Token)
 	if err != nil {
@@ -129,6 +143,7 @@ func main() {
 	dg.AddHandler(messageCreate)
 	dg.AddHandler(messageUpdate)
 	dg.AddHandler(messageReactionAdd)
+	dg.AddHandler(interactionCreate)
 
 	// Message events for reposting, reaction events for 🧱 deletes.
 	dg.Identify.Intents = discordgo.IntentsGuildMessages | discordgo.IntentsGuildMessageReactions
@@ -140,6 +155,12 @@ func main() {
 		return
 	}
 	
+	// Register /secret. Channels that are already turned on keep working if this fails.
+	_, err = dg.ApplicationCommandCreate(dg.State.User.ID, "", secretCommand())
+	if err != nil {
+		log.Printf("Cannot register /secret: %v", err)
+	}
+
 	// Wait here until CTRL-C or other term signal is received.
 	fmt.Println("Bot is now running.  Press CTRL-C to exit.")
 	sc := make(chan os.Signal, 1)
@@ -185,7 +206,12 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		s.ChannelMessageSend(m.ChannelID, "Ping!")
 		return
 	}
-	/* 
+
+	// Messages are only replaced in channels turned on with /secret
+	if !isSecretChannel(m.ChannelID) {
+		return
+	}
+	/*
 		if strings.Contains(m.Content, "pixiv.net") {
 		phixivUrl := strings.Replace(m.Content, "pixiv.net", "phixiv.net", 1)
 		
@@ -533,6 +559,84 @@ func tweetEmbed(vx_data VXTwitter) *discordgo.MessageEmbed {
 		embed.Timestamp = time.Unix(int64(vx_data.DateEpoch), 0).Format(time.RFC3339)
 	}
 	return embed
+}
+
+// secretCommand describes /secret, which only members who can manage channels see by default.
+func secretCommand() *discordgo.ApplicationCommand {
+	var permissions int64 = discordgo.PermissionManageChannels
+	dmPermission := false
+	return &discordgo.ApplicationCommand{
+		Name:                     "secret",
+		Description:              "Turn message replacing on or off in this channel",
+		DefaultMemberPermissions: &permissions,
+		DMPermission:             &dmPermission,
+	}
+}
+
+// interactionCreate handles /secret, turning message replacing on or off in the channel it's used in.
+func interactionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if i.Type != discordgo.InteractionApplicationCommand || i.ApplicationCommandData().Name != "secret" {
+		return
+	}
+	var content string
+	enabled, err := toggleSecretChannel(i.ChannelID)
+	if err != nil {
+		log.Println(err)
+		content = "Couldn't save the change, so nothing changed."
+	} else if enabled {
+		content = "The bot will now replace messages in this channel."
+	} else {
+		content = "The bot will no longer replace messages in this channel."
+	}
+	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{Content: content, Flags: discordgo.MessageFlagsEphemeral},
+	})
+	if err != nil {
+		log.Println(err)
+	}
+}
+
+func isSecretChannel(channelID string) bool {
+	secretChannelsLock.RLock()
+	defer secretChannelsLock.RUnlock()
+	return secretChannels[channelID]
+}
+
+// toggleSecretChannel flips a channel and saves the list. It returns whether the channel is now on.
+func toggleSecretChannel(channelID string) (bool, error) {
+	secretChannelsLock.Lock()
+	defer secretChannelsLock.Unlock()
+	enabled := !secretChannels[channelID]
+	secretChannels[channelID] = enabled
+
+	var channelIDs []string
+	for id, on := range secretChannels {
+		if on {
+			channelIDs = append(channelIDs, id)
+		}
+	}
+	err := os.WriteFile(ChannelsFile, []byte(strings.Join(channelIDs, "\n")+"\n"), 0644)
+	if err != nil {
+		secretChannels[channelID] = !enabled
+		return !enabled, err
+	}
+	return enabled, nil
+}
+
+// loadSecretChannels reads the saved channel IDs, one per line. A missing file means no channels are on.
+func loadSecretChannels(channelsFile string) error {
+	data, err := os.ReadFile(channelsFile)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, channelID := range strings.Fields(string(data)) {
+		secretChannels[channelID] = true
+	}
+	return nil
 }
 
 // readToken reads the bot token from tokenFile, looking in the current
