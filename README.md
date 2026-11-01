@@ -4,15 +4,23 @@ A Discord bot written in Go that reposts messages containing links or attachment
 
 ## What it does
 
-The bot only replaces messages in channels turned on with [`/secret`](#choosing-channels), so it does nothing but answer `!ping` and `!pong` until you turn one on.
+What the bot does depends on whether a channel is turned on with [`/secret`](#choosing-channels).
 
-In those channels, it checks each new message in this order and acts on the first match. It ignores its own messages, but not those from other bots.
+**In other channels,** the bot only replaces X post links, including `twitter.com` and fixer sites such as `fxtwitter.com`, `vxtwitter.com` and `fixupx.com`. It reposts the message with each link changed to `fixupx.com`, with `/en` added so the post is translated to English, then deletes the original. It leaves these alone:
+
+- Links wrapped in `<>`
+- Messages with attachments
+- Forwarded messages
+- Messages from bots
+
+**In channels turned on with `/secret`,** the bot checks each new message in this order and acts on the first match. It ignores its own messages, but not those from other bots.
 
 | Message | What the bot does |
 | --- | --- |
 | `!ping` / `!pong` | Replies `Pong!` / `Ping!` |
 | X post link, without video | Sends an embed with the post's author, text and date, plus its images as attachments and any text sent with the link |
 | X post link, with video | Reposts the message with the link changed to `cunnyx.com` |
+| X post link in a spoiler or `<>` | Reposts the message with the link changed to `cunnyx.com`, keeping the spoiler or `<>` |
 | Forward with embeds | Copies the embeds and attaches their images |
 | Contains a `tenor.com` link | Leaves it alone |
 | Contains any other link (`://`) | Reposts the message, changing `pixiv.net` to `phixiv.net` if present |
@@ -63,7 +71,7 @@ The bot runs until you press Ctrl+C.
 
 ### Choosing channels
 
-Run `/secret` in a channel to turn message replacing on there, and run it again to turn it off. The reply is only visible to you, and by default only members with the **Manage Channels** permission can use the command.
+Run `/secret` in a channel to turn full message replacing on there, and run it again to go back to replacing only X post links. The reply is only visible to you, and by default only members with the **Manage Channels** permission can use the command.
 
 The list is saved to `secret_channels.txt` in the current directory, so start the bot from the same folder each time. Use `-channels-file` to choose a different path.
 

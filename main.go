@@ -94,9 +94,15 @@ var (
 	secretChannelsLock sync.RWMutex
 )
 
-// Matches tweet links on x.com, twitter.com and the embed fixer sites.
-// Group 1 is the user name, group 2 the tweet ID.
-var tweetLink = regexp.MustCompile(`https?://(?:www\.|mobile\.|d\.)?(?:x|twitter|cunnyx|fxtwitter|vxtwitter|fixupx|fixvx|twittpr|girlcockx|stupidpenisx|xcancel)\.com/(\w+)/status/(\d+)\S*`)
+// The start of a tweet link on x.com, twitter.com and the embed fixer sites, up to the user name.
+const tweetSite = `https?://(?:www\.|mobile\.|d\.)?(?:x|twitter|cunnyx|fxtwitter|vxtwitter|fixupx|fixvx|twittpr|girlcockx|stupidpenisx|xcancel)\.com/`
+
+// The end of a tweet link: the user name, the tweet ID and any trailing path or identifiers,
+// stopping before characters that close spoilers or <> around the link.
+const tweetEnd = `(\w+)/status/(\d+)(?:[/?][^\s|,>]*)?`
+
+// Matches a tweet link. Group 1 is the user name, group 2 the tweet ID.
+var tweetLink = regexp.MustCompile(tweetSite + tweetEnd)
 
 // IDs of the bot's phixiv messages that were already rehosted.
 var rehostedPhixiv sync.Map
@@ -106,6 +112,10 @@ var phixivLink = regexp.MustCompile(`(?:^|[^<])https?://(?:www\.)?phixiv\.net/`)
 
 // Matches a link, with or without <> around it. Group 1 is the link itself.
 var linkPattern = regexp.MustCompile(`<?(https?://[^\s<>]+)>?`)
+
+// Matches a tweet link that isn't wrapped in <>. Group 1 is the character before
+// the link, group 2 the user name and group 3 the tweet ID.
+var plainTweetLink = regexp.MustCompile(`(^|[^<])` + tweetSite + tweetEnd)
 
 func init() {
 	
@@ -207,8 +217,11 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	// Messages are only replaced in channels turned on with /secret
+	// Outside the channels turned on with /secret, only tweet links are replaced
 	if !isSecretChannel(m.ChannelID) {
+		if !isForward {
+			replaceTweetLinks(s, m)
+		}
 		return
 	}
 	/*
@@ -318,6 +331,14 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if match := tweetLink.FindStringSubmatch(m.Content); match != nil {
 		tweetPath := match[1] + "/status/" + match[2]
 		messageUrl := strings.Replace(m.Content, match[0], "https://cunnyx.com/"+tweetPath, 1)
+
+		// Links in a spoiler or <> stay links, since an embed would show what the sender hid
+		before, _, _ := strings.Cut(m.Content, match[0])
+		if strings.Count(before, "||")%2 == 1 || strings.HasSuffix(before, "<") {
+			repost(s, m, messageUrl)
+			return
+		}
+
 		vx_data, err := fetchTweet("https://api.vxtwitter.com/" + tweetPath)
 		if err != nil {
 			log.Println(err)
@@ -344,8 +365,8 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			discordFiles = append(discordFiles, file)
 		}
 		
-		// Keep the text around the link, which the embed replaces. The link can be wrapped in <>
-		text := strings.Replace(strings.Replace(m.Content, "<"+match[0], "", 1), match[0], "", 1)
+		// Keep the text around the link, which the embed replaces
+		text := strings.Replace(m.Content, match[0], "", 1)
 		_, err = s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{Content: strings.TrimSpace(text), Embeds: []*discordgo.MessageEmbed{embed}, Files: discordFiles})
 		if err != nil {
 			log.Println(err)
@@ -561,13 +582,33 @@ func tweetEmbed(vx_data VXTwitter) *discordgo.MessageEmbed {
 	return embed
 }
 
+// replaceTweetLinks reposts a message with its tweet links changed to fixupx, which translates
+// the posts to English, and deletes the original. Bot messages are left alone, and so are
+// messages with attachments, since this repost wouldn't include them.
+func replaceTweetLinks(s *discordgo.Session, m *discordgo.MessageCreate) {
+	if m.Author.Bot || len(m.Attachments) > 0 {
+		return
+	}
+	content := plainTweetLink.ReplaceAllString(m.Content, "${1}https://fixupx.com/$2/status/$3/en")
+	if content == m.Content {
+		return
+	}
+	// Replies stay replies. The original is only deleted if the repost went through
+	_, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{Content: content, Reference: m.MessageReference})
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	deleteOriginal(s, m)
+}
+
 // secretCommand describes /secret, which only members who can manage channels see by default.
 func secretCommand() *discordgo.ApplicationCommand {
 	var permissions int64 = discordgo.PermissionManageChannels
 	dmPermission := false
 	return &discordgo.ApplicationCommand{
 		Name:                     "secret",
-		Description:              "Turn message replacing on or off in this channel",
+		Description:              "Turn full message replacing on or off in this channel",
 		DefaultMemberPermissions: &permissions,
 		DMPermission:             &dmPermission,
 	}
@@ -586,7 +627,7 @@ func interactionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	} else if enabled {
 		content = "The bot will now replace messages in this channel."
 	} else {
-		content = "The bot will no longer replace messages in this channel."
+		content = "The bot will now only replace X and Twitter links in this channel."
 	}
 	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
