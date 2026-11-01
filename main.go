@@ -104,6 +104,9 @@ const tweetEnd = `(\w+)/status/(\d+)(?:[/?][^\s|,>]*)?`
 // Matches a tweet link. Group 1 is the user name, group 2 the tweet ID.
 var tweetLink = regexp.MustCompile(tweetSite + tweetEnd)
 
+// The bot's webhook for each channel, used to repost under the sender's name and picture.
+var channelWebhooks sync.Map
+
 // IDs of the bot's phixiv messages that were already rehosted.
 var rehostedPhixiv sync.Map
 
@@ -550,7 +553,7 @@ func messageReactionAdd(s *discordgo.Session, r *discordgo.MessageReactionAdd) {
 		log.Println(err)
 		return
 	}
-	if message.Author == nil || message.Author.ID != s.State.User.ID {
+	if message.Author == nil || !sentByBot(s, message) {
 		return
 	}
 	err = s.ChannelMessageDelete(r.ChannelID, r.MessageID)
@@ -593,13 +596,93 @@ func replaceTweetLinks(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if content == m.Content {
 		return
 	}
-	// Replies stay replies. The original is only deleted if the repost went through
-	_, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{Content: content, Reference: m.MessageReference})
+	// The original is only deleted if the repost went through
+	err := repostAsSender(s, m, content)
 	if err != nil {
 		log.Println(err)
 		return
 	}
 	deleteOriginal(s, m)
+}
+
+// repostAsSender sends content through a webhook showing the sender's name and picture.
+// Webhooks can't reply to messages, so replies, and anything the webhook can't send,
+// go through the bot with the sender's name in the text.
+func repostAsSender(s *discordgo.Session, m *discordgo.MessageCreate, content string) error {
+	name := m.Author.DisplayName()
+	if m.Member != nil && m.Member.Nick != "" {
+		name = m.Member.Nick
+	}
+	if m.MessageReference == nil {
+		webhook, threadID, err := channelWebhook(s, m.ChannelID)
+		if err == nil {
+			// The original message already pinged anyone it mentions, so this repost doesn't
+			_, err = s.WebhookThreadExecute(webhook.ID, webhook.Token, true, threadID, &discordgo.WebhookParams{
+				Content:         content,
+				Username:        name,
+				AvatarURL:       m.Author.AvatarURL(""),
+				AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}},
+			})
+			if err == nil {
+				return nil
+			}
+			// In case the webhook was deleted, look it up again next time
+			channelWebhooks.Delete(webhook.ChannelID)
+		}
+		log.Println(err)
+	}
+	_, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{Content: "**" + name + ":** " + content, Reference: m.MessageReference})
+	return err
+}
+
+// channelWebhook returns the bot's webhook for a channel, creating it if needed. Threads use
+// their parent channel's webhook, so it also returns the thread's ID, or "" outside a thread.
+func channelWebhook(s *discordgo.Session, channelID string) (*discordgo.Webhook, string, error) {
+	channel, err := s.Channel(channelID)
+	if err != nil {
+		return nil, "", err
+	}
+	parentID := channelID
+	threadID := ""
+	if channel.IsThread() {
+		parentID = channel.ParentID
+		threadID = channelID
+	}
+	if webhook, ok := channelWebhooks.Load(parentID); ok {
+		return webhook.(*discordgo.Webhook), threadID, nil
+	}
+	webhooks, err := s.ChannelWebhooks(parentID)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, webhook := range webhooks {
+		if webhook.ApplicationID == s.State.User.ID && webhook.Token != "" {
+			channelWebhooks.Store(parentID, webhook)
+			return webhook, threadID, nil
+		}
+	}
+	webhook, err := s.WebhookCreate(parentID, "the-shield", "")
+	if err != nil {
+		return nil, "", err
+	}
+	channelWebhooks.Store(parentID, webhook)
+	return webhook, threadID, nil
+}
+
+// sentByBot tells whether a message came from the bot itself or one of its webhooks.
+func sentByBot(s *discordgo.Session, message *discordgo.Message) bool {
+	if message.Author.ID == s.State.User.ID {
+		return true
+	}
+	if message.WebhookID == "" {
+		return false
+	}
+	webhook, err := s.Webhook(message.WebhookID)
+	if err != nil {
+		log.Println(err)
+		return false
+	}
+	return webhook.ApplicationID == s.State.User.ID
 }
 
 // secretCommand describes /secret, which only members who can manage channels see by default.

@@ -6,7 +6,9 @@ A Discord bot written in Go that reposts messages with cleaner links and preview
 
 What the bot does depends on whether a channel is turned on with [`/secret`](#choosing-channels). In every channel, it replies `Pong!` to `!ping` and `Ping!` to `!pong`.
 
-**In other channels,** the bot only replaces X post links, including `twitter.com` and fixer sites such as `fxtwitter.com`, `vxtwitter.com` and `fixupx.com`. It reposts the message with each link changed to `fixupx.com`, with `/en` added so the post is translated to English, then deletes the original. Anything after the post ID, such as `?s=20`, is removed. It leaves these alone:
+**In other channels,** the bot only replaces X post links, including `twitter.com` and fixer sites such as `fxtwitter.com`, `vxtwitter.com` and `fixupx.com`. It reposts the message with each link changed to `fixupx.com`, with `/en` added so the post is translated to English, then deletes the original. Anything after the post ID, such as `?s=20`, is removed.
+
+The repost goes through a webhook, so it shows the sender's server nickname and profile picture. Webhooks can't send replies, so a reply is posted by the bot with `**name:**` in front of the text. The bot does the same if the webhook fails, for example without the **Manage Webhooks** permission. It leaves these alone:
 
 - Links wrapped in `<>`
 - Messages with attachments
@@ -34,7 +36,7 @@ Other behavior:
 
 - **Originals:** the original message is deleted after a successful repost.
 - **Phixiv:** once Discord adds a preview to one of the bot's phixiv links, the bot replaces that message with a copy of the preview and its images attached. Animations keep the phixiv link.
-- **Deleting reposts:** anyone who reacts to one of the bot's messages with 🧱 deletes that message.
+- **Deleting reposts:** anyone who reacts to one of the bot's messages, including its webhook reposts, with 🧱 deletes that message.
 
 ## Requirements
 
@@ -45,7 +47,7 @@ Other behavior:
 
 1. In the Developer Portal, create a bot and copy its token.
 2. Under the bot's **Privileged Gateway Intents**, turn on **Message Content Intent**.
-3. Invite the bot to your server with the `bot` and `applications.commands` scopes and these permissions: **View Channels**, **Send Messages**, **Embed Links**, **Attach Files**, **Read Message History** and **Manage Messages**.
+3. Invite the bot to your server with the `bot` and `applications.commands` scopes and these permissions: **View Channels**, **Send Messages**, **Embed Links**, **Attach Files**, **Read Message History**, **Manage Messages** and **Manage Webhooks**.
 4. Create a file named `token.txt` containing only the token:
 
    ```
@@ -101,7 +103,7 @@ The bot looks for `token.txt` in the current directory, then next to the executa
 
 - **Threads are separate channels.** Turning on a channel doesn't include its threads, so run `/secret` inside a thread to turn it on.
 - **Only the first X link gets an embed.** In `/secret` channels, any other links stay in the message text as they were sent.
-- **X reposts don't credit the sender.** The embed shows the post's author, not who shared it. Reposted links don't show the sender either.
+- **`/secret` channels don't credit the sender on X reposts.** The embed shows the post's author, not who shared it. Reposted links don't show the sender either.
 - **Replaced phixiv messages aren't remembered across restarts.** The list of handled messages is kept in memory.
 
 ## License
