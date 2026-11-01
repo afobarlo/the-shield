@@ -414,7 +414,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		mediaUrls := vx_data.MediaURLs
 		if hasVideo(vx_data) {
 			var fits bool
-			mediaUrls, fits = uploadableMedia(s, m.GuildID, vx_data.MediaURLs)
+			mediaUrls, fits = uploadableMedia(s, m.ChannelID, vx_data.MediaURLs)
 			if !fits {
 				repost(s, m, messageUrl)
 				return
@@ -448,6 +448,11 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 	// Forwarded embeds of any kind (bot embeds, link previews...) are reposted like tweets:
 	// the embed's text is copied and its images are downloaded and attached at full size
+	// Forwards with a file over Discord's limit can't be reposted, so they're left alone
+	if isForward && !attachmentsFit(s, m.ChannelID, m.Attachments) {
+		return
+	}
+
 	if len(forwardedEmbeds) > 0 {
 		sent, err := repostEmbeds(s, m.ChannelID, m.Content, m.Attachments, forwardedEmbeds, true)
 		if err != nil {
@@ -519,7 +524,12 @@ func repostEmbeds(s *discordgo.Session, channelID string, content string, attach
 	}
 	var embeds []*discordgo.MessageEmbed
 	for _, embed := range sourceEmbeds {
-		for _, media := range embedMedia(embed) {
+		mediaList := embedMedia(embed)
+		// A video replaces the embed's picture if it fits Discord's limit
+		if embed.Video != nil && embed.Video.URL != "" && videoFits(s, channelID, embed.Video.URL) {
+			mediaList = []embedMediaUrl{{embed.Video.URL, ""}}
+		}
+		for _, media := range mediaList {
 			// Discord allows at most 10 files per message
 			if downloaded[stripQuery(media.url)] || len(downloads) >= 10 {
 				continue
@@ -567,8 +577,8 @@ func rehostPhixiv(s *discordgo.Session, message *discordgo.Message) {
 		return
 	}
 	for _, embed := range message.Embeds {
-		// Animations (ugoira) keep the phixiv link, since embeds can't play video
-		if embed.Video != nil && embed.Video.URL != "" {
+		// Animations (ugoira) over Discord's limit keep the phixiv link
+		if embed.Video != nil && embed.Video.URL != "" && !videoFits(s, message.ChannelID, embed.Video.URL) {
 			return
 		}
 	}
@@ -1062,16 +1072,56 @@ func uploadLimit(tier discordgo.PremiumTier) int64 {
 	return 10 * 1024 * 1024
 }
 
+// channelUploadLimit returns the largest file a bot can upload in a channel, in bytes.
+func channelUploadLimit(s *discordgo.Session, channelID string) (int64, error) {
+	channel, err := s.Channel(channelID)
+	if err != nil {
+		return 0, err
+	}
+	guild, err := s.Guild(channel.GuildID)
+	if err != nil {
+		return 0, err
+	}
+	return uploadLimit(guild.PremiumTier), nil
+}
+
+// videoFits tells whether a video can be uploaded in a channel, without downloading it.
+func videoFits(s *discordgo.Session, channelID string, videoUrl string) bool {
+	limit, err := channelUploadLimit(s, channelID)
+	if err != nil {
+		log.Println(err)
+		return false
+	}
+	return fileFits(videoUrl, limit)
+}
+
+// attachmentsFit tells whether all the attachments can be uploaded in a channel.
+func attachmentsFit(s *discordgo.Session, channelID string, attachments []*discordgo.MessageAttachment) bool {
+	if len(attachments) == 0 {
+		return true
+	}
+	limit, err := channelUploadLimit(s, channelID)
+	if err != nil {
+		log.Println(err)
+		return false
+	}
+	for _, attachment := range attachments {
+		if int64(attachment.Size) > limit {
+			return false
+		}
+	}
+	return true
+}
+
 // uploadableMedia returns the links to upload for a post with videos, checking their sizes
 // without downloading them. X stores GIFs as mp4 files, so those become real GIFs from
 // FxTwitter, or stay as mp4 files if that doesn't fit. It returns false if a video can't be uploaded.
-func uploadableMedia(s *discordgo.Session, guildID string, mediaUrls []string) ([]string, bool) {
-	guild, err := s.Guild(guildID)
+func uploadableMedia(s *discordgo.Session, channelID string, mediaUrls []string) ([]string, bool) {
+	limit, err := channelUploadLimit(s, channelID)
 	if err != nil {
 		log.Println(err)
 		return nil, false
 	}
-	limit := uploadLimit(guild.PremiumTier)
 	var uploadUrls []string
 	for _, mediaUrl := range mediaUrls {
 		if !strings.Contains(mediaUrl, ".mp4") {
@@ -1093,15 +1143,43 @@ func uploadableMedia(s *discordgo.Session, guildID string, mediaUrls []string) (
 	return uploadUrls, true
 }
 
-// fileFits tells whether a file is within limit. It's false if its size can't be found out.
+// fileFits tells whether a link is a video or GIF within limit, without downloading it. It's
+// false if its size can't be found out. Sites that reject HEAD requests, like phixiv, are
+// asked for their first byte instead, since the answer includes the full size.
 func fileFits(fileUrl string, limit int64) bool {
 	resp, err := http.Head(fileUrl)
+	if err == nil {
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK && resp.ContentLength >= 0 {
+			return isVideoType(resp.Header.Get("Content-Type")) && resp.ContentLength <= limit
+		}
+	}
+	req, err := http.NewRequest("GET", fileUrl, nil)
 	if err != nil {
 		log.Println(err)
 		return false
 	}
-	resp.Body.Close()
-	return resp.StatusCode == http.StatusOK && resp.ContentLength >= 0 && resp.ContentLength <= limit
+	req.Header.Set("Range", "bytes=0-0")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		log.Println(err)
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusPartialContent {
+		return false
+	}
+	_, total, _ := strings.Cut(resp.Header.Get("Content-Range"), "/")
+	size, err := strconv.ParseInt(total, 10, 64)
+	if err != nil {
+		return false
+	}
+	return isVideoType(resp.Header.Get("Content-Type")) && size <= limit
+}
+
+// isVideoType tells real video files apart from pages that play a video, like YouTube's.
+func isVideoType(contentType string) bool {
+	return strings.HasPrefix(contentType, "video/") || strings.HasPrefix(contentType, "image/gif")
 }
 
 func fetchTweet(vx_url string) (VXTwitter, error) {
@@ -1189,15 +1267,13 @@ type embedMediaUrl struct {
 }
 
 // embedMedia lists the images of an embed to download and attach. Link previews keep
-// their picture in the thumbnail, and GIF previews (Tenor, Giphy) in the video.
+// their picture in the thumbnail.
 func embedMedia(embed *discordgo.MessageEmbed) []embedMediaUrl {
 	var media []embedMediaUrl
 	if embed.Image != nil && embed.Image.URL != "" {
 		media = append(media, embedMediaUrl{embed.Image.URL, embed.Image.ProxyURL})
 	}
-	if embed.Type == discordgo.EmbedTypeGifv && embed.Video != nil && embed.Video.URL != "" {
-		media = append(media, embedMediaUrl{embed.Video.URL, ""})
-	} else if embed.Type != discordgo.EmbedTypeRich && embed.Thumbnail != nil && embed.Thumbnail.URL != "" {
+	if embed.Type != discordgo.EmbedTypeRich && embed.Thumbnail != nil && embed.Thumbnail.URL != "" {
 		media = append(media, embedMediaUrl{embed.Thumbnail.URL, embed.Thumbnail.ProxyURL})
 	}
 	return media
@@ -1247,6 +1323,10 @@ func extensionFor(contentType string) string {
 		return ".webp"
 	case "video/mp4":
 		return ".mp4"
+	case "video/webm":
+		return ".webm"
+	case "video/quicktime":
+		return ".mov"
 	}
 	return ""
 }

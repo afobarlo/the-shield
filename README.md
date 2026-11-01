@@ -27,7 +27,7 @@ The repost goes through a webhook, so it shows the sender's server nickname and 
 | X post link | Sends an embed with the post's author, text and date and a clean link to the post, plus its images, videos and GIFs as attachments and any text sent with the link. Posts in other languages show an English translation when one is available |
 | X post link, with a video over the server's upload limit | Reposts the message with the link changed to `cunnyx.com` |
 | X post link in a spoiler or `<>` | Reposts the message with the link changed to `cunnyx.com`, keeping the spoiler or `<>` |
-| Forward with embeds | Copies the embeds and attaches their images |
+| Forward with embeds | Copies the embeds and attaches their images and videos. A video over the server's upload limit is replaced by its preview picture |
 | Contains a `tenor.com` link | Leaves it alone |
 | Contains any other link (`://`) | Reposts the message, changing `pixiv.net` to `phixiv.net` if present. Artwork links get `/1-5` added, unless they already pick an image or range. If the artwork has more images, the rest follow in messages with `/6-10`, `/11-15` and so on. Only the last message keeps the embed, and the others just have the images |
 | Has attachments | Re-uploads the files, with any text as a normal message |
@@ -35,12 +35,12 @@ The repost goes through a webhook, so it shows the sender's server nickname and 
 
 X post links also include `twitter.com` and fixer sites such as `fxtwitter.com` and `vxtwitter.com`. If the bot can't build the embed for a post, it falls back to the `cunnyx.com` repost. GIFs are uploaded as `.gif` files converted by `gif.fxtwitter.com`, or as `.mp4` files if that fails or the GIF is too big. Reposted X links also lose anything after the post ID.
 
-Forwarded messages are handled using the forwarded text and files.
+Forwarded messages are handled using the forwarded text and files. A forward with an attachment over the server's upload limit is left alone.
 
 Other behavior:
 
 - **Originals:** the original message is deleted after a successful repost. If the repost fails, the original stays.
-- **Phixiv:** once Discord adds a preview to one of the bot's phixiv links, the bot replaces that message with a copy of the preview and its images attached. Animations keep the phixiv link.
+- **Phixiv:** once Discord adds a preview to one of the bot's phixiv links, the bot replaces that message with a copy of the preview and its images attached. Animations are uploaded as videos, and keep the phixiv link if they're over the server's upload limit.
 - **Deleting reposts:** the person whose message was reposted can delete the repost by reacting to it with 🧱. Nobody else's 🧱 does anything, but members with **Manage Messages** can still delete it the usual way.
 
 ## Requirements
