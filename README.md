@@ -25,12 +25,12 @@ The repost goes through a webhook, so it shows the sender's server nickname and 
 | Forward with embeds | Copies the embeds and attaches their images |
 | Contains a `tenor.com` link | Leaves it alone |
 | Contains any other link (`://`) | Reposts the message, changing `pixiv.net` to `phixiv.net` if present. Artwork links get `/1-9` added to show up to nine images, unless they already pick an image or range |
-| Has attachments | Re-uploads the files in an embed showing the sender's name, avatar and text |
+| Has attachments | Re-uploads the files, with any text as a normal message |
 | Anything else | Leaves it alone |
 
 X post links also include `twitter.com` and fixer sites such as `fxtwitter.com` and `vxtwitter.com`. If the bot can't build the embed for a post, it falls back to the `cunnyx.com` repost. Reposted X links also lose anything after the post ID.
 
-Forwarded messages are handled using the forwarded text and files. Forwarded attachments are re-uploaded with their text as a normal message, without the embed.
+Forwarded messages are handled using the forwarded text and files.
 
 Other behavior:
 
@@ -182,7 +182,7 @@ sudo systemctl restart the-shield
 
 - **Threads are separate channels.** Turning on a channel doesn't include its threads, so run `/secret` inside a thread to turn it on.
 - **Only the first X link gets an embed.** In `/secret` channels, any other links stay in the message text as they were sent.
-- **`/secret` channels don't credit the sender on X reposts.** The embed shows the post's author, not who shared it. Reposted links don't show the sender either.
+- **`/secret` channels don't show the sender.** Reposts come from the bot with no sender's name. X post embeds show the post's author, not who shared it.
 - **Replaced phixiv messages aren't remembered across restarts.** The list of handled messages is kept in memory.
 - **🧱 only works on recorded reposts.** Reposts made before the bot started recording senders can't be deleted this way, and neither can its other messages, such as `Pong!`.
 

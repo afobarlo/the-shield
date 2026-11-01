@@ -433,13 +433,6 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 
 	if len(m.Attachments) > 0 {
-		embed := &discordgo.MessageEmbed{
-			Description: m.Content,
-			Color:       0x5865F2,
-			Author:      &discordgo.MessageEmbedAuthor{Name: m.Author.Username, IconURL: m.Author.AvatarURL("")},
-			Timestamp:   m.Timestamp.Format(time.RFC3339),
-		}
-		// Files are sent as normal attachments, not inside the embed, so Discord shows them at full size
 		var downloads []fileDownload
 		for _, attachment := range m.Attachments {
 			downloads = append(downloads, fileDownload{url: attachment.URL, name: attachment.Filename})
@@ -449,12 +442,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			return
 		}
 
-		message := &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed}, Files: discordFiles}
-		// Forwards only repost the files, with their text as a normal message
-		if isForward {
-			message = &discordgo.MessageSend{Content: m.Content, Files: discordFiles}
-		}
-		sent, err := s.ChannelMessageSendComplex(m.ChannelID, message)
+		sent, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{Content: m.Content, Files: discordFiles})
 		if err != nil {
 			log.Println(err)
 			return
