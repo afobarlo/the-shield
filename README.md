@@ -9,7 +9,7 @@ The bot checks each new server message in this order and acts on the first match
 | Message | What the bot does |
 | --- | --- |
 | `!ping` / `!pong` | Replies `Pong!` / `Ping!` |
-| X post link, without video | Sends an embed with the post's author, text and date, plus its images as attachments |
+| X post link, without video | Sends an embed with the post's author, text and date, plus its images as attachments and any text sent with the link |
 | X post link, with video | Reposts the message with the link changed to `cunnyx.com` |
 | Forward with embeds | Copies the embeds and attaches their images |
 | Contains a `tenor.com` link | Leaves it alone |
@@ -70,7 +70,7 @@ The bot looks for `token.txt` in the current directory, then next to the executa
 
 ## Known limitations
 
-- **X reposts drop other text.** Only the first X link is used, and anything else in the message is lost when the bot sends an embed.
+- **Only the first X link gets an embed.** Any other links stay in the message text as they were sent.
 - **X reposts don't credit the sender.** The embed shows the post's author, not who shared it. Reposted links don't show the sender either.
 - **Replaced phixiv messages aren't remembered across restarts.** The list of handled messages is kept in memory.
 

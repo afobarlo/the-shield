@@ -318,7 +318,9 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			discordFiles = append(discordFiles, file)
 		}
 		
-		_, err = s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{Embeds: []*discordgo.MessageEmbed{embed}, Files: discordFiles})
+		// Keep the text around the link, which the embed replaces. The link can be wrapped in <>
+		text := strings.Replace(strings.Replace(m.Content, "<"+match[0], "", 1), match[0], "", 1)
+		_, err = s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{Content: strings.TrimSpace(text), Embeds: []*discordgo.MessageEmbed{embed}, Files: discordFiles})
 		if err != nil {
 			log.Println(err)
 			repost(s, m, messageUrl)
