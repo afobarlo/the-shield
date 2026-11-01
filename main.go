@@ -114,8 +114,8 @@ var tweetLink = regexp.MustCompile(tweetSite + tweetEnd)
 // The bot's webhook for each channel, used to repost under the sender's name and picture.
 var channelWebhooks sync.Map
 
-// The channel whose webhook each channel uses, so threads don't need looking up every time.
-var webhookChannels sync.Map
+// The parent of each thread, and each other channel as its own parent, so they're only looked up once.
+var parentChannels sync.Map
 
 // IDs of the bot's phixiv messages that were already rehosted.
 var rehostedPhixiv sync.Map
@@ -241,7 +241,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 
 	// Outside the channels turned on with /secret, only tweet links are replaced
-	if !isSecretChannel(m.ChannelID) {
+	if !channelIsSecret(s, m.ChannelID) {
 		if !isForward {
 			replaceTweetLinks(s, m)
 		}
@@ -626,10 +626,10 @@ func repostAsSender(s *discordgo.Session, m *discordgo.MessageCreate, content st
 	return nil
 }
 
-// webhookChannel returns the channel whose webhook a channel uses: the parent for a thread,
-// otherwise the channel itself. That never changes, so each channel is only looked up once.
-func webhookChannel(s *discordgo.Session, channelID string) (string, error) {
-	if parentID, ok := webhookChannels.Load(channelID); ok {
+// parentChannel returns a thread's parent channel, or the channel itself if it isn't a thread.
+// That never changes, so each channel is only looked up once.
+func parentChannel(s *discordgo.Session, channelID string) (string, error) {
+	if parentID, ok := parentChannels.Load(channelID); ok {
 		return parentID.(string), nil
 	}
 	channel, err := s.Channel(channelID)
@@ -640,14 +640,14 @@ func webhookChannel(s *discordgo.Session, channelID string) (string, error) {
 	if channel.IsThread() {
 		parentID = channel.ParentID
 	}
-	webhookChannels.Store(channelID, parentID)
+	parentChannels.Store(channelID, parentID)
 	return parentID, nil
 }
 
 // channelWebhook returns the bot's webhook for a channel, creating it if needed. Threads use
 // their parent channel's webhook, so it also returns the thread's ID, or "" outside a thread.
 func channelWebhook(s *discordgo.Session, channelID string) (*discordgo.Webhook, string, error) {
-	parentID, err := webhookChannel(s, channelID)
+	parentID, err := parentChannel(s, channelID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -738,23 +738,48 @@ func interactionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if i.Type != discordgo.InteractionApplicationCommand || i.ApplicationCommandData().Name != "secret" {
 		return
 	}
-	var content string
-	enabled, err := toggleSecretChannel(i.ChannelID)
-	if err != nil {
-		log.Println(err)
-		content = "Couldn't save the change, so nothing changed."
-	} else if enabled {
-		content = "The bot will now replace messages in this channel."
-	} else {
-		content = "The bot will now only replace X and Twitter links in this channel."
-	}
-	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Content: content, Flags: discordgo.MessageFlagsEphemeral},
+		Data: &discordgo.InteractionResponseData{Content: secretReply(s, i.ChannelID), Flags: discordgo.MessageFlagsEphemeral},
 	})
 	if err != nil {
 		log.Println(err)
 	}
+}
+
+// secretReply flips a channel and returns what to tell the user. A thread whose parent
+// is turned on can't be changed on its own, since it follows the parent.
+func secretReply(s *discordgo.Session, channelID string) string {
+	parentID, err := parentChannel(s, channelID)
+	if err != nil {
+		log.Println(err)
+		return "Couldn't check this channel, so nothing changed."
+	}
+	if parentID != channelID && isSecretChannel(parentID) {
+		return "This thread follows its parent channel, which is turned on. Run /secret there to change it."
+	}
+	enabled, err := toggleSecretChannel(channelID)
+	if err != nil {
+		log.Println(err)
+		return "Couldn't save the change, so nothing changed."
+	}
+	if enabled {
+		return "The bot will now replace messages in this channel."
+	}
+	return "The bot will now only replace X and Twitter links in this channel."
+}
+
+// channelIsSecret tells whether a channel, or the parent of a thread, is turned on with /secret.
+func channelIsSecret(s *discordgo.Session, channelID string) bool {
+	if isSecretChannel(channelID) {
+		return true
+	}
+	parentID, err := parentChannel(s, channelID)
+	if err != nil {
+		log.Println(err)
+		return false
+	}
+	return isSecretChannel(parentID)
 }
 
 func isSecretChannel(channelID string) bool {

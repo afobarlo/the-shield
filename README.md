@@ -74,6 +74,8 @@ The bot runs until you press Ctrl+C. Start it from the same folder each time, be
 
 Run `/secret` in a channel to turn full message replacing on there, and run it again to go back to replacing only X post links. The reply is only visible to you, and by default only members with the **Manage Channels** permission can use the command.
 
+Threads follow their parent channel, so turning on a channel also turns on all its threads. To turn on a single thread instead, run `/secret` inside it while the parent is off.
+
 The list is saved to `secret_channels.txt`.
 
 To add a channel without the command:
@@ -180,7 +182,6 @@ sudo systemctl restart the-shield
 
 ## Known limitations
 
-- **Threads are separate channels.** Turning on a channel doesn't include its threads, so run `/secret` inside a thread to turn it on.
 - **Only the first X link gets an embed.** In `/secret` channels, any other links stay in the message text as they were sent.
 - **`/secret` channels don't show the sender.** Reposts come from the bot with no sender's name. X post embeds show the post's author, not who shared it.
 - **Replaced phixiv messages aren't remembered across restarts.** The list of handled messages is kept in memory.
