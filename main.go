@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"time"
 	"encoding/json"
 )
@@ -131,6 +132,9 @@ var phixivLink = regexp.MustCompile(`(?:^|[^<])https?://(?:www\.)?phixiv\.net/`)
 // Matches a phixiv artwork link. Group 1 is the path up to the artwork ID, group 2 the
 // artwork ID and group 3 the image number or range, if it has one.
 var phixivArtwork = regexp.MustCompile(`phixiv\.net/((?:[\w-]+/)?artworks/(\d+))(/[\d-]+)?/?`)
+
+// Matches a phixiv artwork link with a range. Group 1 is the artwork ID, groups 2 and 3 the range.
+var phixivRange = regexp.MustCompile(`phixiv\.net/(?:[\w-]+/)?artworks/(\d+)/(\d+)-(\d+)`)
 
 // How many images phixiv shows for one link.
 const phixivBatchSize = 5
@@ -441,7 +445,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	// Forwarded embeds of any kind (bot embeds, link previews...) are reposted like tweets:
 	// the embed's text is copied and its images are downloaded and attached at full size
 	if len(forwardedEmbeds) > 0 {
-		sent, err := repostEmbeds(s, m.ChannelID, m.Content, m.Attachments, forwardedEmbeds)
+		sent, err := repostEmbeds(s, m.ChannelID, m.Content, m.Attachments, forwardedEmbeds, true)
 		if err != nil {
 			log.Println(err)
 			return
@@ -499,8 +503,9 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 }
 
 // repostEmbeds sends a copy of embeds with their images, and the given attachments,
-// downloaded and attached at full size. It returns the new message, or nil if there was nothing to send.
-func repostEmbeds(s *discordgo.Session, channelID string, content string, attachments []*discordgo.MessageAttachment, sourceEmbeds []*discordgo.MessageEmbed) (*discordgo.Message, error) {
+// downloaded and attached at full size. With keepEmbeds false, it only sends the images.
+// It returns the new message, or nil if there was nothing to send.
+func repostEmbeds(s *discordgo.Session, channelID string, content string, attachments []*discordgo.MessageAttachment, sourceEmbeds []*discordgo.MessageEmbed, keepEmbeds bool) (*discordgo.Message, error) {
 	var downloads []fileDownload
 	// Embed images that point at one of the message's own attachments are only downloaded once
 	downloaded := map[string]bool{}
@@ -518,7 +523,7 @@ func repostEmbeds(s *discordgo.Session, channelID string, content string, attach
 			downloaded[stripQuery(media.url)] = true
 			downloads = append(downloads, fileDownload{url: media.url, proxyUrl: media.proxyUrl, name: fileNameFromUrl(media.url)})
 		}
-		if embedCopy := copyEmbed(embed); embedCopy != nil {
+		if embedCopy := copyEmbed(embed); keepEmbeds && embedCopy != nil {
 			embeds = append(embeds, embedCopy)
 		}
 	}
@@ -568,7 +573,7 @@ func rehostPhixiv(s *discordgo.Session, message *discordgo.Message) {
 		return
 	}
 	defer close(phixivRehostedChan(message.ID))
-	sent, err := repostEmbeds(s, message.ChannelID, message.Content, message.Attachments, message.Embeds)
+	sent, err := repostEmbeds(s, message.ChannelID, message.Content, message.Attachments, message.Embeds, !isEarlierPhixivBatch(message.Content))
 	if err != nil {
 		log.Println(err)
 		return
@@ -586,6 +591,29 @@ func rehostPhixiv(s *discordgo.Session, message *discordgo.Message) {
 func phixivRehostedChan(messageID string) chan struct{} {
 	done, _ := phixivRehosted.LoadOrStore(messageID, make(chan struct{}))
 	return done.(chan struct{})
+}
+
+// isEarlierPhixivBatch tells whether a phixiv message is a batch of images with more batches
+// after it, so it doesn't need the embed. Spoilered links don't get any more batches.
+func isEarlierPhixivBatch(content string) bool {
+	parts := phixivRange.FindStringSubmatch(content)
+	if parts == nil || strings.Contains(content, "||") {
+		return false
+	}
+	start, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return false
+	}
+	end, err := strconv.Atoi(parts[3])
+	if err != nil || end-start+1 != phixivBatchSize || (start-1)%phixivBatchSize != 0 {
+		return false
+	}
+	pages, err := pixivPageCount(parts[1])
+	if err != nil {
+		log.Println(err)
+		return false
+	}
+	return end < pages
 }
 
 // phixivFollowUps returns a link for each batch of images after the first, using Pixiv's API
