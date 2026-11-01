@@ -36,7 +36,7 @@ Other behavior:
 
 - **Originals:** the original message is deleted after a successful repost.
 - **Phixiv:** once Discord adds a preview to one of the bot's phixiv links, the bot replaces that message with a copy of the preview and its images attached. Animations keep the phixiv link.
-- **Deleting reposts:** anyone who reacts to one of the bot's messages, including its webhook reposts, with 🧱 deletes that message.
+- **Deleting reposts:** the person whose message was reposted can delete the repost by reacting to it with 🧱. Nobody else's 🧱 does anything, but members with **Manage Messages** can still delete it the usual way.
 
 ## Requirements
 
@@ -69,6 +69,8 @@ go build -o the-shield
 ```
 
 The bot runs until you press Ctrl+C.
+
+The bot records who each repost belongs to in `repost_senders.txt`, in the current directory, so 🧱 deletes keep working after a restart. The file grows by one short line per repost. Use `-senders-file` to choose a different path.
 
 ### Choosing channels
 

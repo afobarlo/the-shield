@@ -86,6 +86,13 @@ var (
 	Token     string
 	TokenFile string
 	ChannelsFile string
+	SendersFile string
+)
+
+// Who each repost was made for, by repost message ID. Only that person can delete it with 🧱.
+var (
+	repostSenders     = map[string]string{}
+	repostSendersLock sync.RWMutex
 )
 
 // Channels where the bot replaces messages, turned on and off with /secret.
@@ -125,6 +132,7 @@ func init() {
 	flag.StringVar(&Token, "t", "", "Bot Token (overrides the token file)")
 	flag.StringVar(&TokenFile, "token-file", "token.txt", "File containing the bot token")
 	flag.StringVar(&ChannelsFile, "channels-file", "secret_channels.txt", "File where the channels turned on with /secret are saved")
+	flag.StringVar(&SendersFile, "senders-file", "repost_senders.txt", "File where the sender of each repost is saved")
 	flag.Parse()
 }
 
@@ -142,6 +150,12 @@ func main() {
 	err := loadSecretChannels(ChannelsFile)
 	if err != nil {
 		fmt.Println("error reading secret channels,", err)
+		return
+	}
+
+	err = loadRepostSenders(SendersFile)
+	if err != nil {
+		fmt.Println("error reading repost senders,", err)
 		return
 	}
 
@@ -370,12 +384,13 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		
 		// Keep the text around the link, which the embed replaces
 		text := strings.Replace(m.Content, match[0], "", 1)
-		_, err = s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{Content: strings.TrimSpace(text), Embeds: []*discordgo.MessageEmbed{embed}, Files: discordFiles})
+		sent, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{Content: strings.TrimSpace(text), Embeds: []*discordgo.MessageEmbed{embed}, Files: discordFiles})
 		if err != nil {
 			log.Println(err)
 			repost(s, m, messageUrl)
 			return
 		}
+		recordSender(sent.ID, m.Author.ID)
 		deleteOriginal(s, m)
 		return
 	}
@@ -388,7 +403,8 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			log.Println(err)
 			return
 		}
-		if sent {
+		if sent != nil {
+			recordSender(sent.ID, m.Author.ID)
 			deleteOriginal(s, m)
 		}
 		return
@@ -400,14 +416,10 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		if strings.Contains(m.Content, "tenor.com") {
 			return
 		}
-		s.ChannelMessageSend(m.ChannelID, messageUrl)
-		err := s.ChannelMessageDelete(m.ChannelID, m.ID)
-		if err != nil {
-			log.Println("Cannot delete message: %v", err)
-		}
+		repost(s, m, messageUrl)
 		return
 	}
-	
+
 	if len(m.Attachments) > 0 {
 		embed := &discordgo.MessageEmbed{
 			Description: m.Content,
@@ -434,19 +446,20 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		if isForward {
 			message = &discordgo.MessageSend{Content: m.Content, Files: discordFiles}
 		}
-		_, err := s.ChannelMessageSendComplex(m.ChannelID, message)
+		sent, err := s.ChannelMessageSendComplex(m.ChannelID, message)
 		if err != nil {
 			log.Println(err)
 			return
 		}
+		recordSender(sent.ID, m.Author.ID)
 		deleteOriginal(s, m)
 	}
 	
 }
 
 // repostEmbeds sends a copy of embeds with their images, and the given attachments,
-// downloaded and attached at full size. It returns false if there was nothing to send.
-func repostEmbeds(s *discordgo.Session, channelID string, content string, attachments []*discordgo.MessageAttachment, sourceEmbeds []*discordgo.MessageEmbed) (bool, error) {
+// downloaded and attached at full size. It returns the new message, or nil if there was nothing to send.
+func repostEmbeds(s *discordgo.Session, channelID string, content string, attachments []*discordgo.MessageAttachment, sourceEmbeds []*discordgo.MessageEmbed) (*discordgo.Message, error) {
 	var discordFiles []*discordgo.File
 	// Embed images that point at one of the message's own attachments are only downloaded once
 	downloaded := map[string]bool{}
@@ -483,16 +496,12 @@ func repostEmbeds(s *discordgo.Session, channelID string, content string, attach
 		}
 	}
 	if len(embeds) == 0 && len(discordFiles) == 0 {
-		return false, nil
+		return nil, nil
 	}
 
 	// Links are wrapped in <> so Discord doesn't add its own preview next to the copied embed
 	content = linkPattern.ReplaceAllString(content, "<$1>")
-	_, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{Content: content, Embeds: embeds, Files: discordFiles})
-	if err != nil {
-		return false, err
-	}
-	return true, nil
+	return s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{Content: content, Embeds: embeds, Files: discordFiles})
 }
 
 // messageUpdate catches the moment Discord adds a link's embed to one of the bot's messages.
@@ -535,7 +544,8 @@ func rehostPhixiv(s *discordgo.Session, message *discordgo.Message) {
 		log.Println(err)
 		return
 	}
-	if sent {
+	if sent != nil {
+		recordSender(sent.ID, repostSender(message.ID))
 		err := s.ChannelMessageDelete(message.ChannelID, message.ID)
 		if err != nil {
 			log.Printf("Cannot delete message: %v", err)
@@ -543,20 +553,12 @@ func rehostPhixiv(s *discordgo.Session, message *discordgo.Message) {
 	}
 }
 
-// messageReactionAdd deletes one of the bot's own messages when someone reacts to it with 🧱.
+// messageReactionAdd deletes a repost when the person it was made for reacts to it with 🧱.
 func messageReactionAdd(s *discordgo.Session, r *discordgo.MessageReactionAdd) {
-	if r.Emoji.Name != "🧱" || r.UserID == s.State.User.ID {
+	if r.Emoji.Name != "🧱" || r.UserID != repostSender(r.MessageID) {
 		return
 	}
-	message, err := s.ChannelMessage(r.ChannelID, r.MessageID)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	if message.Author == nil || !sentByBot(s, message) {
-		return
-	}
-	err = s.ChannelMessageDelete(r.ChannelID, r.MessageID)
+	err := s.ChannelMessageDelete(r.ChannelID, r.MessageID)
 	if err != nil {
 		log.Printf("Cannot delete message: %v", err)
 	}
@@ -617,13 +619,15 @@ func repostAsSender(s *discordgo.Session, m *discordgo.MessageCreate, content st
 		webhook, threadID, err := channelWebhook(s, m.ChannelID)
 		if err == nil {
 			// The original message already pinged anyone it mentions, so this repost doesn't
-			_, err = s.WebhookThreadExecute(webhook.ID, webhook.Token, true, threadID, &discordgo.WebhookParams{
+			var sent *discordgo.Message
+			sent, err = s.WebhookThreadExecute(webhook.ID, webhook.Token, true, threadID, &discordgo.WebhookParams{
 				Content:         content,
 				Username:        name,
 				AvatarURL:       m.Author.AvatarURL(""),
 				AllowedMentions: &discordgo.MessageAllowedMentions{Parse: []discordgo.AllowedMentionType{}},
 			})
 			if err == nil {
+				recordSender(sent.ID, m.Author.ID)
 				return nil
 			}
 			// In case the webhook was deleted, look it up again next time
@@ -631,8 +635,12 @@ func repostAsSender(s *discordgo.Session, m *discordgo.MessageCreate, content st
 		}
 		log.Println(err)
 	}
-	_, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{Content: "**" + name + ":** " + content, Reference: m.MessageReference})
-	return err
+	sent, err := s.ChannelMessageSendComplex(m.ChannelID, &discordgo.MessageSend{Content: "**" + name + ":** " + content, Reference: m.MessageReference})
+	if err != nil {
+		return err
+	}
+	recordSender(sent.ID, m.Author.ID)
+	return nil
 }
 
 // channelWebhook returns the bot's webhook for a channel, creating it if needed. Threads use
@@ -669,20 +677,49 @@ func channelWebhook(s *discordgo.Session, channelID string) (*discordgo.Webhook,
 	return webhook, threadID, nil
 }
 
-// sentByBot tells whether a message came from the bot itself or one of its webhooks.
-func sentByBot(s *discordgo.Session, message *discordgo.Message) bool {
-	if message.Author.ID == s.State.User.ID {
-		return true
+// repostSender returns who a repost was made for, or "" if the message isn't a known repost.
+func repostSender(messageID string) string {
+	repostSendersLock.RLock()
+	defer repostSendersLock.RUnlock()
+	return repostSenders[messageID]
+}
+
+// recordSender remembers who a repost was made for and adds it to the file, so that
+// person can still delete it after a restart.
+func recordSender(messageID string, senderID string) {
+	if senderID == "" {
+		return
 	}
-	if message.WebhookID == "" {
-		return false
-	}
-	webhook, err := s.Webhook(message.WebhookID)
+	repostSendersLock.Lock()
+	defer repostSendersLock.Unlock()
+	repostSenders[messageID] = senderID
+
+	file, err := os.OpenFile(SendersFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Println(err)
-		return false
+		return
 	}
-	return webhook.ApplicationID == s.State.User.ID
+	defer file.Close()
+	_, err = fmt.Fprintln(file, messageID, senderID)
+	if err != nil {
+		log.Println(err)
+	}
+}
+
+// loadRepostSenders reads the saved reposts, one "messageID senderID" per line. A missing file means there are none.
+func loadRepostSenders(sendersFile string) error {
+	data, err := os.ReadFile(sendersFile)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	fields := strings.Fields(string(data))
+	for i := 0; i+1 < len(fields); i += 2 {
+		repostSenders[fields[i]] = fields[i+1]
+	}
+	return nil
 }
 
 // secretCommand describes /secret, which only members who can manage channels see by default.
@@ -923,7 +960,12 @@ func stripQuery(fileUrl string) string {
 
 // repost sends content in place of the original message and deletes the original.
 func repost(s *discordgo.Session, m *discordgo.MessageCreate, content string) {
-	s.ChannelMessageSend(m.ChannelID, content)
+	sent, err := s.ChannelMessageSend(m.ChannelID, content)
+	if err != nil {
+		log.Println(err)
+	} else {
+		recordSender(sent.ID, m.Author.ID)
+	}
 	deleteOriginal(s, m)
 }
 

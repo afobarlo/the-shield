@@ -1,3 +1,4 @@
 *.o
 token.txt
 secret_channels.txt
+repost_senders.txt
