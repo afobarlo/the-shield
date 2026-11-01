@@ -19,7 +19,7 @@ The repost goes through a webhook, so it shows the sender's server nickname and 
 
 | Message | What the bot does |
 | --- | --- |
-| X post link, without video | Sends an embed with the post's author, text and date and a clean link to the post, plus its images as attachments and any text sent with the link |
+| X post link, without video | Sends an embed with the post's author, text and date and a clean link to the post, plus its images as attachments and any text sent with the link. Posts in other languages show an English translation when one is available |
 | X post link, with video | Reposts the message with the link changed to `cunnyx.com` |
 | X post link in a spoiler or `<>` | Reposts the message with the link changed to `cunnyx.com`, keeping the spoiler or `<>` |
 | Forward with embeds | Copies the embeds and attaches their images |

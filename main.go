@@ -52,6 +52,10 @@ type VXTwitter struct {
 	Replies             int    `json:"replies,omitempty"`
 	Retweets            int    `json:"retweets,omitempty"`
 	Text                string `json:"text,omitempty"`
+	Translation         *struct {
+		SourceLanguage string `json:"source_language,omitempty"`
+		Text           string `json:"text,omitempty"`
+	} `json:"translation,omitempty"`
 	TweetID             string `json:"tweetID,omitempty"`
 	TweetURL            string `json:"tweetURL,omitempty"`
 	UserName            string `json:"user_name,omitempty"`
@@ -362,7 +366,14 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			return
 		}
 
-		vx_data, err := fetchTweet("https://api.vxtwitter.com/" + tweetPath)
+		// Asks for an English translation. The path uses "i" instead of the user name,
+		// since a user name like "ja" would be read as the language to translate to
+		vx_data, err := fetchTweet("https://api.vxtwitter.com/i/status/" + match[2] + "/en")
+		if err != nil {
+			// The translation can be what failed, so try again without one
+			log.Println(err)
+			vx_data, err = fetchTweet("https://api.vxtwitter.com/" + tweetPath)
+		}
 		if err != nil {
 			log.Println(err)
 			repost(s, m, messageUrl)
@@ -568,6 +579,11 @@ func tweetEmbed(vx_data VXTwitter) *discordgo.MessageEmbed {
 	}
 	if vx_data.DateEpoch != 0 {
 		embed.Timestamp = time.Unix(int64(vx_data.DateEpoch), 0).Format(time.RFC3339)
+	}
+	// Posts with nothing to translate, like a lone link, come back with the same text
+	if vx_data.Translation != nil && vx_data.Translation.Text != "" && vx_data.Translation.Text != vx_data.Text {
+		embed.Description = truncate(vx_data.Translation.Text, 4096)
+		embed.Footer = &discordgo.MessageEmbedFooter{Text: "Translated from " + strings.ToUpper(vx_data.Translation.SourceLanguage)}
 	}
 	return embed
 }
