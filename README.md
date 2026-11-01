@@ -1,12 +1,12 @@
 # the-shield
 
-A Discord bot written in Go that reposts messages containing links or attachments, then deletes the originals. X posts become Discord embeds with their images attached at full size, and Pixiv links go through phixiv.
+A Discord bot written in Go that reposts messages with cleaner links and previews, then deletes the originals. By default it changes X post links to translated `fixupx.com` links. In channels you choose, it also turns X posts into embeds with full-size images, sends Pixiv links through phixiv, and reposts other links and attachments.
 
 ## What it does
 
-What the bot does depends on whether a channel is turned on with [`/secret`](#choosing-channels).
+What the bot does depends on whether a channel is turned on with [`/secret`](#choosing-channels). In every channel, it replies `Pong!` to `!ping` and `Ping!` to `!pong`.
 
-**In other channels,** the bot only replaces X post links, including `twitter.com` and fixer sites such as `fxtwitter.com`, `vxtwitter.com` and `fixupx.com`. It reposts the message with each link changed to `fixupx.com`, with `/en` added so the post is translated to English, then deletes the original. It leaves these alone:
+**In other channels,** the bot only replaces X post links, including `twitter.com` and fixer sites such as `fxtwitter.com`, `vxtwitter.com` and `fixupx.com`. It reposts the message with each link changed to `fixupx.com`, with `/en` added so the post is translated to English, then deletes the original. Anything after the post ID, such as `?s=20`, is removed. It leaves these alone:
 
 - Links wrapped in `<>`
 - Messages with attachments
@@ -17,7 +17,6 @@ What the bot does depends on whether a channel is turned on with [`/secret`](#ch
 
 | Message | What the bot does |
 | --- | --- |
-| `!ping` / `!pong` | Replies `Pong!` / `Ping!` |
 | X post link, without video | Sends an embed with the post's author, text and date, plus its images as attachments and any text sent with the link |
 | X post link, with video | Reposts the message with the link changed to `cunnyx.com` |
 | X post link in a spoiler or `<>` | Reposts the message with the link changed to `cunnyx.com`, keeping the spoiler or `<>` |
@@ -27,7 +26,7 @@ What the bot does depends on whether a channel is turned on with [`/secret`](#ch
 | Has attachments | Re-uploads the files in an embed showing the sender's name, avatar and text |
 | Anything else | Leaves it alone |
 
-X post links also include `twitter.com` and fixer sites such as `fxtwitter.com` and `vxtwitter.com`. If the bot can't build the embed for a post, it falls back to the `cunnyx.com` repost.
+X post links also include `twitter.com` and fixer sites such as `fxtwitter.com` and `vxtwitter.com`. If the bot can't build the embed for a post, it falls back to the `cunnyx.com` repost. Reposted X links also lose anything after the post ID.
 
 Forwarded messages are handled using the forwarded text and files. Forwarded attachments are re-uploaded with their text as a normal message, without the embed.
 
@@ -75,6 +74,20 @@ Run `/secret` in a channel to turn full message replacing on there, and run it a
 
 The list is saved to `secret_channels.txt` in the current directory, so start the bot from the same folder each time. Use `-channels-file` to choose a different path.
 
+To add a channel without the command:
+
+1. In Discord, turn on **Developer Mode** under **User Settings > Advanced**, then right-click the channel and choose **Copy Channel ID**.
+2. Stop the bot. It only reads the file at startup, and using `/secret` overwrites the file with the bot's own list, so edits made while it's running can be lost.
+3. Add the ID to the file, in the folder you start the bot from:
+
+   ```bash
+   echo CHANNEL_ID >> secret_channels.txt
+   ```
+
+4. Start the bot again.
+
+Each ID goes on its own line. To turn a channel off, delete its line while the bot is stopped.
+
 ### Token options
 
 The bot looks for `token.txt` in the current directory, then next to the executable. Two flags change that:
@@ -87,7 +100,7 @@ The bot looks for `token.txt` in the current directory, then next to the executa
 ## Known limitations
 
 - **Threads are separate channels.** Turning on a channel doesn't include its threads, so run `/secret` inside a thread to turn it on.
-- **Only the first X link gets an embed.** Any other links stay in the message text as they were sent.
+- **Only the first X link gets an embed.** In `/secret` channels, any other links stay in the message text as they were sent.
 - **X reposts don't credit the sender.** The embed shows the post's author, not who shared it. Reposted links don't show the sender either.
 - **Replaced phixiv messages aren't remembered across restarts.** The list of handled messages is kept in memory.
 
