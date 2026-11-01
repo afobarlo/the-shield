@@ -90,6 +90,7 @@ var (
 	Token     string
 	TokenFile string
 	ChannelsFile string
+	OptOutFile string
 	SendersFile string
 )
 
@@ -100,10 +101,10 @@ var (
 )
 
 // Channels where the bot replaces messages, turned on and off with /secret.
-var (
-	secretChannels     = map[string]bool{}
-	secretChannelsLock sync.RWMutex
-)
+var secretChannels = &channelList{channels: map[string]bool{}}
+
+// Channels where the bot leaves X links alone, turned on and off with /optout.
+var optOutChannels = &channelList{channels: map[string]bool{}}
 
 // The start of a tweet link on x.com, twitter.com and the embed fixer sites, up to the user name.
 const tweetSite = `https?://(?:www\.|mobile\.|d\.)?(?:x|twitter|cunnyx|fxtwitter|vxtwitter|fixupx|fixvx|twittpr|girlcockx|stupidpenisx|xcancel)\.com/`
@@ -142,6 +143,7 @@ func init() {
 	flag.StringVar(&Token, "t", "", "Bot Token (overrides the token file)")
 	flag.StringVar(&TokenFile, "token-file", "token.txt", "File containing the bot token")
 	flag.StringVar(&ChannelsFile, "channels-file", "secret_channels.txt", "File where the channels turned on with /secret are saved")
+	flag.StringVar(&OptOutFile, "optout-file", "optout_channels.txt", "File where the channels turned off with /optout are saved")
 	flag.StringVar(&SendersFile, "senders-file", "repost_senders.txt", "File where the sender of each repost is saved")
 	flag.Parse()
 }
@@ -157,9 +159,15 @@ func main() {
 		Token = token
 	}
 
-	err := loadSecretChannels(ChannelsFile)
+	err := secretChannels.load(ChannelsFile)
 	if err != nil {
 		fmt.Println("error reading secret channels,", err)
+		return
+	}
+
+	err = optOutChannels.load(OptOutFile)
+	if err != nil {
+		fmt.Println("error reading opted out channels,", err)
 		return
 	}
 
@@ -192,10 +200,14 @@ func main() {
 		return
 	}
 	
-	// Register /secret. Channels that are already turned on keep working if this fails.
-	_, err = dg.ApplicationCommandCreate(dg.State.User.ID, "", secretCommand())
+	// Register the commands. Channels that are already saved keep working if this fails.
+	_, err = dg.ApplicationCommandCreate(dg.State.User.ID, "", channelCommand("secret", "Turn full message replacing on or off in this channel"))
 	if err != nil {
 		log.Printf("Cannot register /secret: %v", err)
+	}
+	_, err = dg.ApplicationCommandCreate(dg.State.User.ID, "", channelCommand("optout", "Stop or resume replacing X links in this channel"))
+	if err != nil {
+		log.Printf("Cannot register /optout: %v", err)
 	}
 
 	// Wait here until CTRL-C or other term signal is received.
@@ -245,7 +257,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 
 	// Outside the channels turned on with /secret, only tweet links are replaced
-	if !channelIsSecret(s, m.ChannelID) {
+	if !secretChannels.includes(s, m.ChannelID) {
 		if !isForward {
 			replaceTweetLinks(s, m)
 		}
@@ -601,7 +613,7 @@ func replaceTweetLinks(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 	content := plainTweetLink.ReplaceAllString(m.Content, "${1}https://fixupx.com/$2/status/$3/en")
-	if content == m.Content {
+	if content == m.Content || optOutChannels.includes(s, m.ChannelID) {
 		return
 	}
 	// The original is only deleted if the repost went through
@@ -744,97 +756,81 @@ func loadRepostSenders(sendersFile string) error {
 	return nil
 }
 
-// secretCommand describes /secret, which only members who can manage channels see by default.
-func secretCommand() *discordgo.ApplicationCommand {
+// channelCommand describes a command for a channel, which only members who can manage channels see by default.
+func channelCommand(name string, description string) *discordgo.ApplicationCommand {
 	var permissions int64 = discordgo.PermissionManageChannels
 	dmPermission := false
 	return &discordgo.ApplicationCommand{
-		Name:                     "secret",
-		Description:              "Turn full message replacing on or off in this channel",
+		Name:                     name,
+		Description:              description,
 		DefaultMemberPermissions: &permissions,
 		DMPermission:             &dmPermission,
 	}
 }
 
-// interactionCreate handles /secret, turning message replacing on or off in the channel it's used in.
+// interactionCreate handles /secret and /optout in the channel they're used in.
 func interactionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	if i.Type != discordgo.InteractionApplicationCommand || i.ApplicationCommandData().Name != "secret" {
+	if i.Type != discordgo.InteractionApplicationCommand {
+		return
+	}
+	var content string
+	switch i.ApplicationCommandData().Name {
+	case "secret":
+		content = toggleReply(s, i.ChannelID, "secret", secretChannels, "optout", optOutChannels,
+			"The bot will now replace messages in this channel.",
+			"The bot will now only replace X and Twitter links in this channel.")
+	case "optout":
+		content = toggleReply(s, i.ChannelID, "optout", optOutChannels, "secret", secretChannels,
+			"The bot will no longer replace X and Twitter links in this channel.",
+			"The bot will replace X and Twitter links in this channel again.")
+	default:
 		return
 	}
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Content: secretReply(s, i.ChannelID), Flags: discordgo.MessageFlagsEphemeral},
+		Data: &discordgo.InteractionResponseData{Content: content, Flags: discordgo.MessageFlagsEphemeral},
 	})
 	if err != nil {
 		log.Println(err)
 	}
 }
 
-// secretReply flips a channel and returns what to tell the user. A thread whose parent
-// is turned on can't be changed on its own, since it follows the parent.
-func secretReply(s *discordgo.Session, channelID string) string {
+// toggleReply flips a channel in a command's list and returns what to tell the user. A channel
+// can't be in both lists, and a thread whose parent is in the list follows the parent.
+func toggleReply(s *discordgo.Session, channelID string, command string, list *channelList, otherCommand string, otherList *channelList, onReply string, offReply string) string {
 	parentID, err := parentChannel(s, channelID)
 	if err != nil {
 		log.Println(err)
 		return "Couldn't check this channel, so nothing changed."
 	}
-	if parentID != channelID && isSecretChannel(parentID) {
-		return "This thread follows its parent channel, which is turned on. Run /secret there to change it."
+	if otherList.has(channelID) || otherList.has(parentID) {
+		return "This channel is using /" + otherCommand + ". Turn that off first, in the channel where it was run."
 	}
-	enabled, err := toggleSecretChannel(channelID)
+	if parentID != channelID && list.has(parentID) {
+		return "This thread follows its parent channel. Run /" + command + " there to change it."
+	}
+	enabled, err := list.toggle(channelID)
 	if err != nil {
 		log.Println(err)
 		return "Couldn't save the change, so nothing changed."
 	}
 	if enabled {
-		return "The bot will now replace messages in this channel."
+		return onReply
 	}
-	return "The bot will now only replace X and Twitter links in this channel."
+	return offReply
 }
 
-// channelIsSecret tells whether a channel, or the parent of a thread, is turned on with /secret.
-func channelIsSecret(s *discordgo.Session, channelID string) bool {
-	if isSecretChannel(channelID) {
-		return true
-	}
-	parentID, err := parentChannel(s, channelID)
-	if err != nil {
-		log.Println(err)
-		return false
-	}
-	return isSecretChannel(parentID)
+// channelList is a saved list of channels, with one channel ID per line in its file.
+type channelList struct {
+	lock     sync.RWMutex
+	channels map[string]bool
+	file     string
 }
 
-func isSecretChannel(channelID string) bool {
-	secretChannelsLock.RLock()
-	defer secretChannelsLock.RUnlock()
-	return secretChannels[channelID]
-}
-
-// toggleSecretChannel flips a channel and saves the list. It returns whether the channel is now on.
-func toggleSecretChannel(channelID string) (bool, error) {
-	secretChannelsLock.Lock()
-	defer secretChannelsLock.Unlock()
-	enabled := !secretChannels[channelID]
-	secretChannels[channelID] = enabled
-
-	var channelIDs []string
-	for id, on := range secretChannels {
-		if on {
-			channelIDs = append(channelIDs, id)
-		}
-	}
-	err := os.WriteFile(ChannelsFile, []byte(strings.Join(channelIDs, "\n")+"\n"), 0644)
-	if err != nil {
-		secretChannels[channelID] = !enabled
-		return !enabled, err
-	}
-	return enabled, nil
-}
-
-// loadSecretChannels reads the saved channel IDs, one per line. A missing file means no channels are on.
-func loadSecretChannels(channelsFile string) error {
-	data, err := os.ReadFile(channelsFile)
+// load reads the list from a file, which is also where changes get saved. A missing file means an empty list.
+func (list *channelList) load(file string) error {
+	list.file = file
+	data, err := os.ReadFile(file)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -842,9 +838,49 @@ func loadSecretChannels(channelsFile string) error {
 		return err
 	}
 	for _, channelID := range strings.Fields(string(data)) {
-		secretChannels[channelID] = true
+		list.channels[channelID] = true
 	}
 	return nil
+}
+
+func (list *channelList) has(channelID string) bool {
+	list.lock.RLock()
+	defer list.lock.RUnlock()
+	return list.channels[channelID]
+}
+
+// includes tells whether a channel, or the parent of a thread, is in the list.
+func (list *channelList) includes(s *discordgo.Session, channelID string) bool {
+	if list.has(channelID) {
+		return true
+	}
+	parentID, err := parentChannel(s, channelID)
+	if err != nil {
+		log.Println(err)
+		return false
+	}
+	return list.has(parentID)
+}
+
+// toggle flips a channel and saves the list. It returns whether the channel is now in the list.
+func (list *channelList) toggle(channelID string) (bool, error) {
+	list.lock.Lock()
+	defer list.lock.Unlock()
+	enabled := !list.channels[channelID]
+	list.channels[channelID] = enabled
+
+	var channelIDs []string
+	for id, on := range list.channels {
+		if on {
+			channelIDs = append(channelIDs, id)
+		}
+	}
+	err := os.WriteFile(list.file, []byte(strings.Join(channelIDs, "\n")+"\n"), 0644)
+	if err != nil {
+		list.channels[channelID] = !enabled
+		return !enabled, err
+	}
+	return enabled, nil
 }
 
 // readToken reads the bot token from tokenFile, looking in the current

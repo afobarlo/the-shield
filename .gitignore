@@ -1,5 +1,6 @@
 *.o
 token.txt
 secret_channels.txt
+optout_channels.txt
 repost_senders.txt
 /the-shield

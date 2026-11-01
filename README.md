@@ -12,6 +12,7 @@ What the bot does depends on whether a channel is turned on with [`/secret`](#ch
 - Messages with attachments
 - Forwarded messages
 - Messages from bots
+- Channels turned off with [`/optout`](#choosing-channels)
 
 The repost goes through a webhook, so it shows the sender's server nickname and profile picture. Webhooks can't send replies, so a reply is posted by the bot with `**name:**` in front of the text. The bot does the same if the webhook fails, for example without the **Manage Webhooks** permission.
 
@@ -92,15 +93,18 @@ To add a channel without the command:
 
 Each ID goes on its own line. To turn a channel off, delete its line while the bot is stopped.
 
+Run `/optout` in a channel to stop the bot replacing X post links there, and run it again to undo that. It needs the same permission as `/secret`, and threads follow their parent channel in the same way. A channel can't use both commands at once, so turn one off before using the other. The list is saved to `optout_channels.txt`.
+
 ### Files and flags
 
 | File | What it holds | Flag to change the path |
 | --- | --- | --- |
 | `token.txt` | The bot token. The bot looks in the current directory, then next to the executable. | `-token-file` |
 | `secret_channels.txt` | Channels turned on with `/secret` | `-channels-file` |
+| `optout_channels.txt` | Channels turned off with `/optout` | `-optout-file` |
 | `repost_senders.txt` | Who each repost belongs to, so 🧱 deletes keep working after a restart. It grows by one short line per repost. | `-senders-file` |
 
-All three are listed in `.gitignore`. You can also pass the token directly with `-t`, which is used instead of the file.
+All four are listed in `.gitignore`. You can also pass the token directly with `-t`, which is used instead of the file.
 
 ### Running with systemd
 
