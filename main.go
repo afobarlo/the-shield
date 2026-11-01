@@ -114,6 +114,9 @@ var tweetLink = regexp.MustCompile(tweetSite + tweetEnd)
 // The bot's webhook for each channel, used to repost under the sender's name and picture.
 var channelWebhooks sync.Map
 
+// The channel whose webhook each channel uses, so threads don't need looking up every time.
+var webhookChannels sync.Map
+
 // IDs of the bot's phixiv messages that were already rehosted.
 var rehostedPhixiv sync.Map
 
@@ -374,15 +377,14 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		
 		embed := tweetEmbed(vx_data)
 		// Images are sent as normal attachments, not inside the embed, so Discord shows them at full size
-		var discordFiles []*discordgo.File
+		var downloads []fileDownload
 		for _, imageUrl := range vx_data.MediaURLs {
-			file, err := downloadFile(imageUrl, fileNameFromUrl(imageUrl))
-			if err != nil {
-				log.Println(err)
-				repost(s, m, messageUrl)
-				return
-			}
-			discordFiles = append(discordFiles, file)
+			downloads = append(downloads, fileDownload{url: imageUrl, name: fileNameFromUrl(imageUrl)})
+		}
+		discordFiles, failed := downloadAll(downloads)
+		if failed > 0 {
+			repost(s, m, messageUrl)
+			return
 		}
 		
 		// Keep the text around the link, which the embed replaces
@@ -438,15 +440,11 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			Timestamp:   m.Timestamp.Format(time.RFC3339),
 		}
 		// Files are sent as normal attachments, not inside the embed, so Discord shows them at full size
-		var discordFiles []*discordgo.File
+		var downloads []fileDownload
 		for _, attachment := range m.Attachments {
-			file, err := downloadFile(attachment.URL, attachment.Filename)
-			if err != nil {
-				log.Println(err)
-				continue
-			}
-			discordFiles = append(discordFiles, file)
+			downloads = append(downloads, fileDownload{url: attachment.URL, name: attachment.Filename})
 		}
+		discordFiles, _ := downloadAll(downloads)
 		if len(discordFiles) == 0 {
 			return
 		}
@@ -470,41 +468,28 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 // repostEmbeds sends a copy of embeds with their images, and the given attachments,
 // downloaded and attached at full size. It returns the new message, or nil if there was nothing to send.
 func repostEmbeds(s *discordgo.Session, channelID string, content string, attachments []*discordgo.MessageAttachment, sourceEmbeds []*discordgo.MessageEmbed) (*discordgo.Message, error) {
-	var discordFiles []*discordgo.File
+	var downloads []fileDownload
 	// Embed images that point at one of the message's own attachments are only downloaded once
 	downloaded := map[string]bool{}
 	for _, attachment := range attachments {
-		file, err := downloadFile(attachment.URL, attachment.Filename)
-		if err != nil {
-			log.Println(err)
-			continue
-		}
-		discordFiles = append(discordFiles, file)
+		downloads = append(downloads, fileDownload{url: attachment.URL, name: attachment.Filename})
 		downloaded[stripQuery(attachment.URL)] = true
 	}
 	var embeds []*discordgo.MessageEmbed
 	for _, embed := range sourceEmbeds {
 		for _, media := range embedMedia(embed) {
 			// Discord allows at most 10 files per message
-			if downloaded[stripQuery(media.url)] || len(discordFiles) >= 10 {
+			if downloaded[stripQuery(media.url)] || len(downloads) >= 10 {
 				continue
 			}
 			downloaded[stripQuery(media.url)] = true
-			file, err := downloadFile(media.url, fileNameFromUrl(media.url))
-			if err != nil && media.proxyUrl != "" {
-				// Fall back to Discord's cached copy
-				file, err = downloadFile(media.proxyUrl, fileNameFromUrl(media.proxyUrl))
-			}
-			if err != nil {
-				log.Println(err)
-				continue
-			}
-			discordFiles = append(discordFiles, file)
+			downloads = append(downloads, fileDownload{url: media.url, proxyUrl: media.proxyUrl, name: fileNameFromUrl(media.url)})
 		}
 		if embedCopy := copyEmbed(embed); embedCopy != nil {
 			embeds = append(embeds, embedCopy)
 		}
 	}
+	discordFiles, _ := downloadAll(downloads)
 	if len(embeds) == 0 && len(discordFiles) == 0 {
 		return nil, nil
 	}
@@ -653,17 +638,33 @@ func repostAsSender(s *discordgo.Session, m *discordgo.MessageCreate, content st
 	return nil
 }
 
+// webhookChannel returns the channel whose webhook a channel uses: the parent for a thread,
+// otherwise the channel itself. That never changes, so each channel is only looked up once.
+func webhookChannel(s *discordgo.Session, channelID string) (string, error) {
+	if parentID, ok := webhookChannels.Load(channelID); ok {
+		return parentID.(string), nil
+	}
+	channel, err := s.Channel(channelID)
+	if err != nil {
+		return "", err
+	}
+	parentID := channelID
+	if channel.IsThread() {
+		parentID = channel.ParentID
+	}
+	webhookChannels.Store(channelID, parentID)
+	return parentID, nil
+}
+
 // channelWebhook returns the bot's webhook for a channel, creating it if needed. Threads use
 // their parent channel's webhook, so it also returns the thread's ID, or "" outside a thread.
 func channelWebhook(s *discordgo.Session, channelID string) (*discordgo.Webhook, string, error) {
-	channel, err := s.Channel(channelID)
+	parentID, err := webhookChannel(s, channelID)
 	if err != nil {
 		return nil, "", err
 	}
-	parentID := channelID
 	threadID := ""
-	if channel.IsThread() {
-		parentID = channel.ParentID
+	if parentID != channelID {
 		threadID = channelID
 	}
 	if webhook, ok := channelWebhooks.Load(parentID); ok {
@@ -882,6 +883,45 @@ func downloadFile(fileUrl string, name string) (*discordgo.File, error) {
 		name += extensionFor(contentType)
 	}
 	return &discordgo.File{Name: name, ContentType: contentType, Reader: bytes.NewReader(data)}, nil
+}
+
+// fileDownload is a file to fetch with downloadAll. proxyUrl is Discord's cached copy, if there is one.
+type fileDownload struct {
+	url      string
+	proxyUrl string
+	name     string
+}
+
+// downloadAll fetches all the files at the same time. It returns the ones that worked,
+// in the original order, and how many failed.
+func downloadAll(downloads []fileDownload) ([]*discordgo.File, int) {
+	results := make([]*discordgo.File, len(downloads))
+	var wg sync.WaitGroup
+	for i, download := range downloads {
+		wg.Add(1)
+		go func(i int, download fileDownload) {
+			defer wg.Done()
+			file, err := downloadFile(download.url, download.name)
+			if err != nil && download.proxyUrl != "" {
+				// Fall back to Discord's cached copy
+				file, err = downloadFile(download.proxyUrl, fileNameFromUrl(download.proxyUrl))
+			}
+			if err != nil {
+				log.Println(err)
+				return
+			}
+			results[i] = file
+		}(i, download)
+	}
+	wg.Wait()
+
+	var files []*discordgo.File
+	for _, file := range results {
+		if file != nil {
+			files = append(files, file)
+		}
+	}
+	return files, len(downloads) - len(files)
 }
 
 type embedMediaUrl struct {
