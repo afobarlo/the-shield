@@ -136,6 +136,10 @@ var phixivArtwork = regexp.MustCompile(`phixiv\.net/((?:[\w-]+/)?artworks/(\d+))
 // Matches a phixiv artwork link with a range. Group 1 is the artwork ID, groups 2 and 3 the range.
 var phixivRange = regexp.MustCompile(`phixiv\.net/(?:[\w-]+/)?artworks/(\d+)/(\d+)-(\d+)`)
 
+// Matches a Pixiv or phixiv artwork link that isn't wrapped in <>. Group 1 is the character before
+// the link, group 2 the path up to the artwork ID, group 3 the artwork ID and group 4 the image number or range.
+var plainPixivLink = regexp.MustCompile(`(^|[^<])https?://(?:www\.)?(?:pixiv|phixiv)\.net/((?:[\w-]+/)?artworks/(\d+))(/[\d-]+)?/?`)
+
 // How many images phixiv shows for one link.
 const phixivBatchSize = 5
 
@@ -219,7 +223,7 @@ func main() {
 	if err != nil {
 		log.Printf("Cannot register /secret: %v", err)
 	}
-	_, err = dg.ApplicationCommandCreate(dg.State.User.ID, "", channelCommand("optout", "Stop or resume replacing X links in this channel"))
+	_, err = dg.ApplicationCommandCreate(dg.State.User.ID, "", channelCommand("optout", "Stop or resume replacing X and Pixiv links in this channel"))
 	if err != nil {
 		log.Printf("Cannot register /optout: %v", err)
 	}
@@ -270,10 +274,10 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	// Outside the channels turned on with /secret, only tweet links are replaced
+	// Outside the channels turned on with /secret, only tweet and Pixiv links are replaced
 	if !secretChannels.includes(s, m.ChannelID) {
 		if !isForward {
-			replaceTweetLinks(s, m)
+			replaceLinks(s, m)
 		}
 		return
 	}
@@ -559,7 +563,7 @@ func messageUpdate(s *discordgo.Session, m *discordgo.MessageUpdate) {
 // embed, with a copy of that embed and its images attached, like a tweet repost.
 func rehostPhixiv(s *discordgo.Session, message *discordgo.Message) {
 	// The rehosted copy wraps its link in <>, so only a plain phixiv link still needs rehosting
-	if message.Author == nil || message.Author.ID != s.State.User.ID || len(message.Embeds) == 0 || !phixivLink.MatchString(message.Content) {
+	if message.Author == nil || message.Author.ID != s.State.User.ID || len(message.Embeds) == 0 || !phixivLink.MatchString(message.Content) || !secretChannels.includes(s, message.ChannelID) {
 		return
 	}
 	for _, embed := range message.Embeds {
@@ -713,15 +717,25 @@ func tweetEmbed(vx_data VXTwitter) *discordgo.MessageEmbed {
 	return embed
 }
 
-// replaceTweetLinks reposts a message with its tweet links changed to fixupx, which translates
-// the posts to English, and deletes the original. Bot messages are left alone, and so are
-// messages with attachments, since this repost wouldn't include them.
-func replaceTweetLinks(s *discordgo.Session, m *discordgo.MessageCreate) {
-	if m.Author.Bot || len(m.Attachments) > 0 {
+// replaceLinks reposts a message with its tweet links changed to fixupx, which translates the
+// posts to English, and its Pixiv links changed to phixiv, then deletes the original. Artworks
+// with more images than one link shows get follow-up links. Bot messages are left alone, and
+// so are messages with attachments, since this repost wouldn't include them.
+func replaceLinks(s *discordgo.Session, m *discordgo.MessageCreate) {
+	if m.Author.Bot || len(m.Attachments) > 0 || optOutChannels.includes(s, m.ChannelID) {
 		return
 	}
 	content := plainTweetLink.ReplaceAllString(m.Content, "${1}https://fixupx.com/$2/status/$3/en")
-	if content == m.Content || optOutChannels.includes(s, m.ChannelID) {
+	var followUps []string
+	content = plainPixivLink.ReplaceAllStringFunc(content, func(link string) string {
+		parts := plainPixivLink.FindStringSubmatch(link)
+		if parts[4] != "" {
+			return parts[1] + "https://www.phixiv.net/" + parts[2] + parts[4]
+		}
+		followUps = append(followUps, phixivFollowUps(parts[2], parts[3])...)
+		return parts[1] + "https://www.phixiv.net/" + parts[2] + fmt.Sprintf("/1-%d", phixivBatchSize)
+	})
+	if content == m.Content {
 		return
 	}
 	// The original is only deleted if the repost went through
@@ -731,6 +745,18 @@ func replaceTweetLinks(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 	deleteOriginal(s, m)
+
+	// Spoilered links stay single messages, since the sender hid them
+	if strings.Contains(content, "||") {
+		return
+	}
+	for _, link := range followUps {
+		err := repostAsSender(s, m, link)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+	}
 }
 
 // repostAsSender sends content through a webhook showing the sender's name and picture.
@@ -886,11 +912,11 @@ func interactionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	case "secret":
 		content = toggleReply(s, i.ChannelID, "secret", secretChannels, "optout", optOutChannels,
 			"The bot will now replace messages in this channel.",
-			"The bot will now only replace X and Twitter links in this channel.")
+			"The bot will now only replace X and Pixiv links in this channel.")
 	case "optout":
 		content = toggleReply(s, i.ChannelID, "optout", optOutChannels, "secret", secretChannels,
-			"The bot will no longer replace X and Twitter links in this channel.",
-			"The bot will replace X and Twitter links in this channel again.")
+			"The bot will no longer replace X and Pixiv links in this channel.",
+			"The bot will replace X and Pixiv links in this channel again.")
 	default:
 		return
 	}

@@ -1,12 +1,16 @@
 # the-shield
 
-A Discord bot written in Go that reposts messages with cleaner links and previews, then deletes the originals. By default it changes X post links to translated `fixupx.com` links. In channels you choose, it also turns X posts into embeds with full-size images, sends Pixiv links through phixiv, and reposts other links and attachments. Whoever's message was reposted can delete the repost by reacting with 🧱.
+A Discord bot written in Go that reposts messages with cleaner links and previews, then deletes the originals. By default it changes X post links to translated `fixupx.com` links and Pixiv links to `phixiv.net` links. In channels you choose, it also turns X posts into embeds with full-size images, sends Pixiv links through phixiv, and reposts other links and attachments. Whoever's message was reposted can delete the repost by reacting with 🧱.
 
 ## What it does
 
 What the bot does depends on whether a channel is turned on with [`/secret`](#choosing-channels). In every channel, it replies `Pong!` to `!ping` and `Ping!` to `!pong`.
 
-**In other channels,** the bot only replaces X post links, including `twitter.com` and fixer sites such as `fxtwitter.com`, `vxtwitter.com` and `fixupx.com`. It reposts the message with each link changed to `fixupx.com`, with `/en` added so the post is translated to English, then deletes the original. Anything after the post ID, such as `?s=20`, is removed. It leaves these alone:
+**In other channels,** the bot only replaces X and Pixiv links. For X posts, that covers `x.com`, `twitter.com` and fixer sites such as `fxtwitter.com`, `vxtwitter.com` and `fixupx.com`. It reposts the message with each link changed to `fixupx.com`, with `/en` added so the post is translated to English, then deletes the original. Anything after the post ID, such as `?s=20`, is removed.
+
+It also changes Pixiv artwork links to `phixiv.net` with `/1-5` added, unless they already pick an image or range. If the artwork has more images, it posts links for the rest, such as `/6-10` and `/11-15`. These stay as plain links, with no reuploading or copied embeds.
+
+It leaves these alone:
 
 - Links wrapped in `<>`
 - Messages with attachments
@@ -73,7 +77,7 @@ The bot runs until you press Ctrl+C. Start it from the same folder each time, be
 
 ### Choosing channels
 
-Run `/secret` in a channel to turn full message replacing on there, and run it again to go back to replacing only X post links. The reply is only visible to you, and by default only members with the **Manage Channels** permission can use the command.
+Run `/secret` in a channel to turn full message replacing on there, and run it again to go back to replacing only X and Pixiv links. The reply is only visible to you, and by default only members with the **Manage Channels** permission can use the command.
 
 Threads follow their parent channel, so turning on a channel also turns on all its threads. To turn on a single thread instead, run `/secret` inside it while the parent is off.
 
@@ -93,7 +97,7 @@ To add a channel without the command:
 
 Each ID goes on its own line. To turn a channel off, delete its line while the bot is stopped.
 
-Run `/optout` in a channel to stop the bot replacing X post links there, and run it again to undo that. It needs the same permission as `/secret`, and threads follow their parent channel in the same way. A channel can't use both commands at once, so turn one off before using the other. The list is saved to `optout_channels.txt`.
+Run `/optout` in a channel to stop the bot replacing X and Pixiv links there, and run it again to undo that. It needs the same permission as `/secret`, and threads follow their parent channel in the same way. A channel can't use both commands at once, so turn one off before using the other. The list is saved to `optout_channels.txt`.
 
 ### Files and flags
 
