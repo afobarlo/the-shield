@@ -128,8 +128,18 @@ var rehostedPhixiv sync.Map
 // Matches a phixiv link that isn't wrapped in <>.
 var phixivLink = regexp.MustCompile(`(?:^|[^<])https?://(?:www\.)?phixiv\.net/`)
 
-// Matches a phixiv artwork link. Group 1 is the image number or range, if it has one.
-var phixivArtwork = regexp.MustCompile(`phixiv\.net/(?:[\w-]+/)?artworks/\d+(/[\d-]+)?/?`)
+// Matches a phixiv artwork link. Group 1 is the path up to the artwork ID, group 2 the
+// artwork ID and group 3 the image number or range, if it has one.
+var phixivArtwork = regexp.MustCompile(`phixiv\.net/((?:[\w-]+/)?artworks/(\d+))(/[\d-]+)?/?`)
+
+// How many images phixiv shows for one link.
+const phixivBatchSize = 5
+
+// How long to wait for a phixiv message to be rehosted before posting the next images.
+const phixivBatchWait = 15 * time.Second
+
+// Closed once the bot's phixiv message with this ID has been rehosted.
+var phixivRehosted sync.Map
 
 // Matches a link, with or without <> around it. Group 1 is the link itself.
 var linkPattern = regexp.MustCompile(`<?(https?://[^\s<>]+)>?`)
@@ -449,14 +459,21 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		if strings.Contains(m.Content, "tenor.com") {
 			return
 		}
-		// Ask for the first nine images, unless the link already picks some
+		// Ask for the first images, unless the link already picks some. The rest go in follow-up messages
+		var followUps []string
 		messageUrl = phixivArtwork.ReplaceAllStringFunc(messageUrl, func(link string) string {
-			if phixivArtwork.FindStringSubmatch(link)[1] != "" {
+			parts := phixivArtwork.FindStringSubmatch(link)
+			if parts[3] != "" {
 				return link
 			}
-			return strings.TrimSuffix(link, "/") + "/1-9"
+			followUps = append(followUps, phixivFollowUps(parts[1], parts[2])...)
+			return strings.TrimSuffix(link, "/") + fmt.Sprintf("/1-%d", phixivBatchSize)
 		})
-		repost(s, m, messageUrl)
+		sent := repost(s, m, messageUrl)
+		// Links in a spoiler or <> stay single messages, since the sender hid them
+		if sent != nil && !strings.Contains(messageUrl, "||") && !strings.Contains(messageUrl, "<http") {
+			postPhixivFollowUps(s, m, sent.ID, followUps)
+		}
 		return
 	}
 
@@ -550,6 +567,7 @@ func rehostPhixiv(s *discordgo.Session, message *discordgo.Message) {
 	if _, done := rehostedPhixiv.LoadOrStore(message.ID, true); done {
 		return
 	}
+	defer close(phixivRehostedChan(message.ID))
 	sent, err := repostEmbeds(s, message.ChannelID, message.Content, message.Attachments, message.Embeds)
 	if err != nil {
 		log.Println(err)
@@ -561,6 +579,68 @@ func rehostPhixiv(s *discordgo.Session, message *discordgo.Message) {
 		if err != nil {
 			log.Printf("Cannot delete message: %v", err)
 		}
+	}
+}
+
+// phixivRehostedChan returns the channel that's closed once a phixiv message has been rehosted.
+func phixivRehostedChan(messageID string) chan struct{} {
+	done, _ := phixivRehosted.LoadOrStore(messageID, make(chan struct{}))
+	return done.(chan struct{})
+}
+
+// phixivFollowUps returns a link for each batch of images after the first, using Pixiv's API
+// to count them. If that fails, for example on age-restricted works, it returns none.
+func phixivFollowUps(artworkPath string, artworkID string) []string {
+	pages, err := pixivPageCount(artworkID)
+	if err != nil {
+		log.Println(err)
+		return nil
+	}
+	var links []string
+	for start := phixivBatchSize + 1; start <= pages; start += phixivBatchSize {
+		end := min(start+phixivBatchSize-1, pages)
+		link := fmt.Sprintf("https://www.phixiv.net/%s/%d-%d", artworkPath, start, end)
+		if start == end {
+			link = fmt.Sprintf("https://www.phixiv.net/%s/%d", artworkPath, start)
+		}
+		links = append(links, link)
+	}
+	return links
+}
+
+func pixivPageCount(artworkID string) (int, error) {
+	resp, err := http.Get("https://www.pixiv.net/ajax/illust/" + artworkID)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("pixiv artwork %s: %s", artworkID, resp.Status)
+	}
+	var data struct {
+		Body struct {
+			PageCount int `json:"pageCount"`
+		} `json:"body"`
+	}
+	err = json.NewDecoder(resp.Body).Decode(&data)
+	return data.Body.PageCount, err
+}
+
+// postPhixivFollowUps posts the links one at a time, waiting for each previous message
+// to be rehosted first. Rehosting posts a new message, so this keeps the images in order.
+func postPhixivFollowUps(s *discordgo.Session, m *discordgo.MessageCreate, previousID string, links []string) {
+	for _, link := range links {
+		select {
+		case <-phixivRehostedChan(previousID):
+		case <-time.After(phixivBatchWait):
+		}
+		sent, err := s.ChannelMessageSend(m.ChannelID, link)
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		recordSender(sent.ID, m.Author.ID)
+		previousID = sent.ID
 	}
 }
 
@@ -1134,14 +1214,16 @@ func stripQuery(fileUrl string) string {
 }
 
 // repost sends content in place of the original message and deletes the original if that worked.
-func repost(s *discordgo.Session, m *discordgo.MessageCreate, content string) {
+// It returns the new message, or nil if it couldn't be sent.
+func repost(s *discordgo.Session, m *discordgo.MessageCreate, content string) *discordgo.Message {
 	sent, err := s.ChannelMessageSend(m.ChannelID, content)
 	if err != nil {
 		log.Println(err)
-		return
+		return nil
 	}
 	recordSender(sent.ID, m.Author.ID)
 	deleteOriginal(s, m)
+	return sent
 }
 
 func deleteOriginal(s *discordgo.Session, m *discordgo.MessageCreate) {

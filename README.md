@@ -25,7 +25,7 @@ The repost goes through a webhook, so it shows the sender's server nickname and 
 | X post link in a spoiler or `<>` | Reposts the message with the link changed to `cunnyx.com`, keeping the spoiler or `<>` |
 | Forward with embeds | Copies the embeds and attaches their images |
 | Contains a `tenor.com` link | Leaves it alone |
-| Contains any other link (`://`) | Reposts the message, changing `pixiv.net` to `phixiv.net` if present. Artwork links get `/1-9` added to show more images, unless they already pick an image or range. Phixiv currently seems to show at most five |
+| Contains any other link (`://`) | Reposts the message, changing `pixiv.net` to `phixiv.net` if present. Artwork links get `/1-5` added, unless they already pick an image or range. If the artwork has more images, the rest follow in messages with `/6-10`, `/11-15` and so on |
 | Has attachments | Re-uploads the files, with any text as a normal message |
 | Anything else | Leaves it alone |
 
