@@ -526,8 +526,10 @@ func repostEmbeds(s *discordgo.Session, channelID string, content string, attach
 	for _, embed := range sourceEmbeds {
 		mediaList := embedMedia(embed)
 		// A video replaces the embed's picture if it fits Discord's limit
-		if embed.Video != nil && embed.Video.URL != "" && videoFits(s, channelID, embed.Video.URL) {
-			mediaList = []embedMediaUrl{{embed.Video.URL, ""}}
+		if embed.Video != nil && embed.Video.URL != "" {
+			if videoUrl := uploadableVideo(s, channelID, embed.Video.URL); videoUrl != "" {
+				mediaList = []embedMediaUrl{{videoUrl, ""}}
+			}
 		}
 		for _, media := range mediaList {
 			// Discord allows at most 10 files per message
@@ -578,7 +580,7 @@ func rehostPhixiv(s *discordgo.Session, message *discordgo.Message) {
 	}
 	for _, embed := range message.Embeds {
 		// Animations (ugoira) over Discord's limit keep the phixiv link
-		if embed.Video != nil && embed.Video.URL != "" && !videoFits(s, message.ChannelID, embed.Video.URL) {
+		if embed.Video != nil && embed.Video.URL != "" && uploadableVideo(s, message.ChannelID, embed.Video.URL) == "" {
 			return
 		}
 	}
@@ -1085,14 +1087,25 @@ func channelUploadLimit(s *discordgo.Session, channelID string) (int64, error) {
 	return uploadLimit(guild.PremiumTier), nil
 }
 
-// videoFits tells whether a video can be uploaded in a channel, without downloading it.
-func videoFits(s *discordgo.Session, channelID string, videoUrl string) bool {
+// uploadableVideo returns the link to upload for a video in a channel, checking its size without
+// downloading it, or "" if it can't be uploaded. Pixiv animations become looping GIFs from phixiv,
+// or stay as mp4 files if the GIF doesn't fit.
+func uploadableVideo(s *discordgo.Session, channelID string, videoUrl string) string {
 	limit, err := channelUploadLimit(s, channelID)
 	if err != nil {
 		log.Println(err)
-		return false
+		return ""
 	}
-	return fileFits(videoUrl, limit)
+	if strings.Contains(videoUrl, "/i/ugoira/") && strings.HasSuffix(videoUrl, ".mp4") {
+		gifUrl := strings.TrimSuffix(videoUrl, ".mp4") + ".gif"
+		if fileFits(gifUrl, limit) {
+			return gifUrl
+		}
+	}
+	if fileFits(videoUrl, limit) {
+		return videoUrl
+	}
+	return ""
 }
 
 // attachmentsFit tells whether all the attachments can be uploaded in a channel.

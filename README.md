@@ -40,7 +40,7 @@ Forwarded messages are handled using the forwarded text and files. A forward wit
 Other behavior:
 
 - **Originals:** the original message is deleted after a successful repost. If the repost fails, the original stays.
-- **Phixiv:** once Discord adds a preview to one of the bot's phixiv links, the bot replaces that message with a copy of the preview and its images attached. Animations are uploaded as videos, and keep the phixiv link if they're over the server's upload limit.
+- **Phixiv:** once Discord adds a preview to one of the bot's phixiv links, the bot replaces that message with a copy of the preview and its images attached. Animations are uploaded as looping GIFs, or as `.mp4` files if the GIF is over the server's upload limit, and keep the phixiv link if neither fits.
 - **Deleting reposts:** the person whose message was reposted can delete the repost by reacting to it with 🧱. Nobody else's 🧱 does anything, but members with **Manage Messages** can still delete it the usual way.
 
 ## Requirements
